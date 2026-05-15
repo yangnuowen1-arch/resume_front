@@ -1,14 +1,26 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
-import { login, register } from "../../api";
+import { login, register, type LoginResponse } from "../../api";
 import { isRequestError, setAccessToken } from "../../request";
+import { readRedirectPathFromLocation, resolveRedirectPath } from "../../auth/redirect";
 
 type AuthMode = "login" | "register";
 
+function extractAccessToken(response: LoginResponse): string {
+  if (typeof response === "string") {
+    return response.trim();
+  }
+  if (typeof response.token === "string") {
+    return response.token.trim();
+  }
+  return "";
+}
+
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [mode, setMode] = useState<AuthMode>("login");
   const [account, setAccount] = useState("");
   const [username, setUsername] = useState("");
@@ -39,14 +51,15 @@ export default function LoginPage() {
     mutationKey: ["auth", "login"],
     mutationFn: login,
     onSuccess: (response) => {
-      const token = typeof response === "string" ? response.trim() : "";
+      const token = extractAccessToken(response);
       if (!token.length) {
-        setSuccessMessage("Login succeeded, but no token was returned by backend.");
+        setErrorMessage("Login failed: backend did not return access token.");
         return;
       }
 
       setAccessToken(token);
-      navigate("/dashboard", { replace: true });
+      const redirectPath = resolveRedirectPath(readRedirectPathFromLocation(location));
+      navigate(redirectPath, { replace: true });
     },
     onError: (error) => {
       const message = isRequestError(error) ? error.message : "Login failed";

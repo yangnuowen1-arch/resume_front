@@ -1,24 +1,34 @@
 import axios, { type AxiosRequestConfig, type AxiosResponse, type InternalAxiosRequestConfig } from "axios";
 import { normalizeRequestError, RequestError } from "./errors";
+import { queryClient } from "./query-client";
 import type { ApiEnvelope, ApiSuccessCode } from "./types";
 
 const ACCESS_TOKEN_KEY = "access_token";
+const ACCESS_TOKEN_CHANGED_EVENT = "auth:access-token-changed";
 const DEFAULT_TIMEOUT = 15_000;
-const DEFAULT_SUCCESS_CODES: ApiSuccessCode[] = [0, 200];
+const DEFAULT_SUCCESS_CODES: ApiSuccessCode[] = [0, 200, 201];
 
 function parseSuccessCodes(rawCodes: string | undefined): ApiSuccessCode[] {
-  if (!rawCodes || rawCodes.trim().length === 0) {
+  if (!rawCodes?.trim()) {
     return DEFAULT_SUCCESS_CODES;
   }
 
-  return rawCodes
+  const parsedCodes = rawCodes
     .split(",")
     .map((token) => token.trim())
     .filter(Boolean)
-    .map((code) => {
-      const parsed = Number(code);
-      return Number.isNaN(parsed) ? code : parsed;
+    .map((token) => {
+      const parsed = Number(token);
+      return Number.isNaN(parsed) ? token : parsed;
     });
+
+  const dedupedByCode = new Map<string, ApiSuccessCode>();
+  [...DEFAULT_SUCCESS_CODES, ...parsedCodes].forEach((code) => {
+    dedupedByCode.set(String(code), code);
+  });
+
+
+  return Array.from(dedupedByCode.values());
 }
 
 function getApiTimeout(): number {
@@ -48,15 +58,66 @@ function isSuccessCode(code: ApiSuccessCode, successCodes: ApiSuccessCode[]): bo
 }
 
 export function getAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_TOKEN_KEY);
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.localStorage.getItem(ACCESS_TOKEN_KEY);
+}
+
+function notifyAccessTokenChanged(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new Event(ACCESS_TOKEN_CHANGED_EVENT));
+}
+
+export function hasAccessToken(): boolean {
+  const token = getAccessToken();
+  return typeof token === "string" && token.trim().length > 0;
+}
+
+export function subscribeAccessTokenChange(callback: () => void): () => void {
+  if (typeof window === "undefined") {
+    return () => undefined;
+  }
+
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === ACCESS_TOKEN_KEY || event.key === null) {
+      callback();
+    }
+  };
+
+  window.addEventListener("storage", onStorage);
+  window.addEventListener(ACCESS_TOKEN_CHANGED_EVENT, callback);
+
+  return () => {
+    window.removeEventListener("storage", onStorage);
+    window.removeEventListener(ACCESS_TOKEN_CHANGED_EVENT, callback);
+  };
 }
 
 export function setAccessToken(token: string): void {
-  localStorage.setItem(ACCESS_TOKEN_KEY, token);
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const normalizedToken = token.trim();
+  if (!normalizedToken) {
+    clearAccessToken();
+    return;
+  }
+
+  window.localStorage.setItem(ACCESS_TOKEN_KEY, normalizedToken);
+  notifyAccessTokenChanged();
 }
 
 export function clearAccessToken(): void {
-  localStorage.removeItem(ACCESS_TOKEN_KEY);
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+  notifyAccessTokenChanged();
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "";
@@ -109,6 +170,7 @@ http.interceptors.response.use(
     const normalizedError = normalizeRequestError(error);
     if (normalizedError.status === 401) {
       clearAccessToken();
+      queryClient.clear();
     }
     return Promise.reject(normalizedError);
   },
