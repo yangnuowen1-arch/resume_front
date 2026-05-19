@@ -132,6 +132,10 @@ export const http = axios.create({
 });
 
 http.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+    config.headers.delete("Content-Type");
+  }
+
   const token = getAccessToken();
   if (token) {
     if (typeof config.headers.set === "function") {

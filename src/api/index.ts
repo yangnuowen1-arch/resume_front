@@ -1,9 +1,13 @@
 export { login, register } from "./auth";
 export type { LoginResponse } from "./auth";
+export { createApplication } from "./applications";
+export type { ApplicationStatus, CreateApplicationRequest } from "./applications";
 export { createJobCategory, listJobCategories, updateJobCategory } from "./job-categories";
 export type { CreateJobCategoryRequest, JobCategory, JobCategoryStatus, ListJobCategoriesParams, ListJobCategoriesResponse, UpdateJobCategoryRequest } from "./job-categories";
 export { assignJobMember, bindJobTags, createJob, listJobs, updateJob } from "./jobs";
 export type { AssignJobMemberRequest, BindJobTagsRequest, CreateJobRequest, Job, JobStatus, ListJobsParams, ListJobsResponse, UpdateJobRequest } from "./jobs";
+export { uploadResume } from "./resumes";
+export type { ResumeResponse, UploadResumeRequest } from "./resumes";
 export { createTagGroup, listTagGroups } from "./tag-groups";
 export type { CreateTagGroupRequest, ListTagGroupsParams, ListTagGroupsResponse, TagGroup, TagGroupStatus } from "./tag-groups";
 export { createTag, listTags, updateTag } from "./tags";
