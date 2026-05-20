@@ -1,8 +1,8 @@
 import { useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle, File, LoaderCircle, Upload, X } from "lucide-react";
-import { createApplication, listJobs, uploadResume, type ApiId, type ResumeResponse } from "../../api";
-import { isRequestError } from "../../request";
+import { CheckCircle, File, LoaderCircle, Search, Upload, X } from "lucide-react";
+import { createApplication, listJobs, listResumes, uploadResume, type ApiId, type ResumeResponse } from "../../api";
+import { isRequestError, queryClient } from "../../request";
 
 interface UploadedFileResult {
   fileName: string;
@@ -38,6 +38,20 @@ function getResumeId(resume: ResumeResponse): number | null {
   return apiIdToNumber(resume.resumeId ?? resume.id);
 }
 
+function getResumeFilename(resume: ResumeResponse): string {
+  return resume.originalFilename ?? resume.originalName ?? resume.fileName ?? `Resume #${String(resume.resumeId ?? resume.id ?? "-")}`;
+}
+
+function formatFileSize(size: number | undefined): string {
+  if (!size) {
+    return "-";
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(2)} MB`;
+}
+
 export default function ResumesPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -51,10 +65,26 @@ export default function ResumesPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [uploadedResults, setUploadedResults] = useState<UploadedFileResult[]>([]);
+  const [resumeKeywordInput, setResumeKeywordInput] = useState("");
+  const [resumeKeyword, setResumeKeyword] = useState("");
+  const [resumeCandidateId, setResumeCandidateId] = useState("");
+  const [resumeLanguage, setResumeLanguage] = useState("");
 
   const jobsQuery = useQuery({
     queryKey: ["jobs", "resume-upload-options"],
     queryFn: () => listJobs({ page: 1, pageSize: 200, status: "published" }),
+  });
+
+  const resumesQuery = useQuery({
+    queryKey: ["resumes", { keyword: resumeKeyword, candidateId: resumeCandidateId, language: resumeLanguage }],
+    queryFn: () =>
+      listResumes({
+        page: 1,
+        pageSize: 50,
+        keyword: resumeKeyword || undefined,
+        candidateId: toOptionalNumber(resumeCandidateId),
+        language: resumeLanguage || undefined,
+      }),
   });
 
   const addFiles = (files: FileList | File[]) => {
@@ -148,6 +178,8 @@ export default function ResumesPage() {
         setUploadedResults([...results]);
       }
       setSelectedFiles([]);
+      queryClient.invalidateQueries({ queryKey: ["resumes"] });
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
     } catch (error) {
       setFormError(getErrorMessage(error, error instanceof Error ? error.message : "Failed to upload resume."));
     } finally {
@@ -162,7 +194,7 @@ export default function ResumesPage() {
         <p className="text-sm text-gray-600 md:text-base">Upload resumes and create application records for jobs.</p>
       </div>
 
-      <form onSubmit={submitUploads} className="max-w-5xl space-y-6">
+      <form onSubmit={submitUploads} className="mb-8 max-w-5xl space-y-6">
         <section className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
           <div className="grid gap-4 lg:grid-cols-2">
             <label className="block">
@@ -355,6 +387,134 @@ export default function ResumesPage() {
           </button>
         </div>
       </form>
+
+      <section className="space-y-4">
+        <div>
+          <h2 className="mb-1 text-lg font-semibold text-gray-900">Resume Library</h2>
+          <p className="text-sm text-gray-600">Browse uploaded resume records.</p>
+        </div>
+
+        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_auto]">
+            <SearchBox
+              value={resumeKeywordInput}
+              placeholder="Search filename, text, or candidate..."
+              onChange={setResumeKeywordInput}
+              onSubmit={() => setResumeKeyword(resumeKeywordInput.trim())}
+            />
+            <input
+              type="number"
+              value={resumeCandidateId}
+              onChange={(event) => setResumeCandidateId(event.target.value)}
+              placeholder="Candidate ID"
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
+            />
+            <input
+              type="text"
+              value={resumeLanguage}
+              onChange={(event) => setResumeLanguage(event.target.value)}
+              placeholder="Language"
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
+            />
+            <button type="button" onClick={() => setResumeKeyword(resumeKeywordInput.trim())} className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800">
+              Search
+            </button>
+          </div>
+        </div>
+
+        <QueryState loading={resumesQuery.isLoading} error={resumesQuery.error} fallback="Failed to load resumes." />
+        {!resumesQuery.isLoading && !resumesQuery.isError && (
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+            <div className="border-b border-gray-200 px-4 py-3 text-sm text-gray-500">
+              Total {resumesQuery.data?.total ?? 0} resumes
+            </div>
+            <div className="divide-y divide-gray-200">
+              {(resumesQuery.data?.items ?? []).map((resume) => (
+                <div key={String(resume.id ?? resume.resumeId)} className="p-4 transition-colors hover:bg-gray-50">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="flex min-w-0 gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50">
+                        <File className="h-5 w-5 text-blue-600" />
+                      </div>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-base font-semibold text-gray-900">{getResumeFilename(resume)}</h3>
+                        <div className="mt-2 grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-4">
+                          <span>ID: {String(resume.id ?? resume.resumeId ?? "-")}</span>
+                          <span>Candidate: {resume.candidateName ?? resume.candidateId ?? "-"}</span>
+                          <span>Language: {resume.language || "-"}</span>
+                          <span>Size: {formatFileSize(resume.fileSize)}</span>
+                        </div>
+                        {resume.rawText && <p className="mt-2 line-clamp-2 text-sm text-gray-500">{resume.rawText}</p>}
+                      </div>
+                    </div>
+                    <div className="text-sm text-gray-500">
+                      {resume.uploadedAt ?? resume.createdAt ?? "-"}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {(resumesQuery.data?.items ?? []).length === 0 && <EmptyState label="No resumes found." />}
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
+}
+
+function SearchBox({
+  value,
+  placeholder,
+  onChange,
+  onSubmit,
+}: {
+  value: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="relative">
+      <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
+      <input
+        type="text"
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            onSubmit();
+          }
+        }}
+        className="w-full rounded-lg border border-gray-300 py-2 pl-10 pr-4 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
+      />
+    </div>
+  );
+}
+
+function QueryState({ loading, error, fallback }: { loading: boolean; error: unknown; fallback: string }) {
+  if (loading) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-6 text-gray-600 shadow-sm">
+        <div className="flex items-center gap-2">
+          <LoaderCircle className="h-4 w-4 animate-spin" />
+          Loading...
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 shadow-sm">
+        {getErrorMessage(error, fallback)}
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function EmptyState({ label }: { label: string }) {
+  return <div className="rounded-lg border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500">{label}</div>;
 }

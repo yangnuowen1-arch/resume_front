@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Briefcase, Upload, FileCheck, Activity, Menu, X, LogOut } from "lucide-react";
+import { LayoutDashboard, Briefcase, Upload, FileCheck, Activity, Menu, X, LogOut, Users } from "lucide-react";
 import { clearAccessToken, queryClient } from "../request";
 
 export function Layout() {
@@ -11,6 +11,7 @@ export function Layout() {
   const navigation = [
     { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
     { name: "Job Management", path: "/jobs", icon: Briefcase },
+    { name: "Candidates", path: "/candidates", icon: Users },
     { name: "Resume Upload", path: "/resumes", icon: Upload },
     { name: "Screening Results", path: "/screening", icon: FileCheck },
     { name: "Operation Logs", path: "/logs", icon: Activity },

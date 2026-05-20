@@ -1,5 +1,5 @@
 import { request } from "../request";
-import type { ApiId } from "./types";
+import type { ApiId, PaginatedResponse } from "./types";
 
 export interface UploadResumeRequest {
   file: File;
@@ -12,12 +12,44 @@ export interface ResumeResponse {
   id?: ApiId;
   resumeId?: ApiId;
   candidateId?: number;
+  candidateName?: string;
   fileName?: string;
   originalName?: string;
+  originalFilename?: string;
+  fileUrl?: string;
+  fileSize?: number;
+  fileType?: string;
   rawText?: string;
   language?: string;
+  uploadBy?: number;
+  uploadedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface ListResumesParams {
+  page?: number;
+  pageSize?: number;
+  keyword?: string;
+  candidateId?: number;
+  language?: string;
+}
+
+export type ListResumesResponse = PaginatedResponse<ResumeResponse>;
+
+export function listResumes(params: ListResumesParams = {}): Promise<ListResumesResponse> {
+  const page = params.page ?? 1;
+  const pageSize = params.pageSize ?? 20;
+
+  return request.get<ListResumesResponse>("/resumes", {
+    params: {
+      page,
+      pageSize,
+      keyword: params.keyword,
+      candidateId: params.candidateId,
+      language: params.language,
+    },
+  });
 }
 
 export function uploadResume(payload: UploadResumeRequest): Promise<ResumeResponse> {

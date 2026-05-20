@@ -3,6 +3,7 @@ import { AuthAwareFallbackRoute, ProtectedRoute, PublicOnlyRoute } from "./compo
 import { Layout } from "./components/Layout";
 import DashboardPage from "./pages/dashboard";
 import JobsPage from "./pages/jobs";
+import CandidatesPage from "./pages/candidates";
 import ResumesPage from "./pages/resumes";
 import LogsPage from "./pages/logs";
 import ScreeningPage from "./pages/screening";
@@ -22,6 +23,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="jobs" element={<JobsPage />} />
+          <Route path="candidates" element={<CandidatesPage />} />
           <Route path="resumes" element={<ResumesPage />} />
           <Route path="screening" element={<ScreeningPage />} />
           <Route path="screening/:id" element={<ScreeningDetailPage />} />
