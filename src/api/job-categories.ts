@@ -7,8 +7,6 @@ export interface JobCategory {
   id: ApiId;
   name: string;
   description?: string;
-  parentId?: number;
-  sortOrder?: number;
   status: JobCategoryStatus | string;
   createdAt?: string;
   updatedAt?: string;
@@ -26,8 +24,6 @@ export type ListJobCategoriesResponse = PaginatedResponse<JobCategory>;
 export interface CreateJobCategoryRequest {
   name: string;
   description?: string;
-  parentId?: number;
-  sortOrder?: number;
   status?: JobCategoryStatus;
 }
 
@@ -35,8 +31,6 @@ export interface UpdateJobCategoryRequest {
   name: string;
   status: JobCategoryStatus | string;
   description?: string;
-  parentId?: number;
-  sortOrder?: number;
 }
 
 export function listJobCategories(params: ListJobCategoriesParams = {}): Promise<ListJobCategoriesResponse> {

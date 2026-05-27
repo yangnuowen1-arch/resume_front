@@ -26,6 +26,7 @@ export type ListTagsResponse = PaginatedResponse<Tag>;
 
 export interface CreateTagRequest {
   name: string;
+  status?: TagStatus | string;
   color?: string;
   groupId?: number;
 }

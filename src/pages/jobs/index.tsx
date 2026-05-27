@@ -9,23 +9,24 @@ import {
   Search,
   Tag,
   Tags,
-  UserPlus,
   X,
 } from "lucide-react";
 import {
-  assignJobMember,
   bindJobTags,
   createJob,
   createJobCategory,
   createTag,
   createTagGroup,
+  listGroupedTags,
   listJobCategories,
   listJobs,
   listTagGroups,
   listTags,
+  listUsers,
   updateJob,
   updateJobCategory,
   updateTag,
+  updateTagGroup,
   type ApiId,
   type CreateJobCategoryRequest,
   type CreateJobRequest,
@@ -36,24 +37,23 @@ import {
   type JobCategoryStatus,
   type JobStatus,
   type Tag as ApiTag,
+  type TagGroup,
+  type TagGroupStatus,
   type TagStatus,
   type UpdateJobCategoryRequest,
   type UpdateJobRequest,
+  type UpdateTagGroupRequest,
   type UpdateTagRequest,
+  type User,
 } from "../../api";
 import { isRequestError, queryClient } from "../../request";
 
 type TabId = "jobs" | "categories" | "tags" | "groups";
-type ModalId = "job" | "category" | "tag" | "group" | "bindTags" | "member" | null;
+type ModalId = "job" | "category" | "tag" | "group" | null;
 
 interface JobFormState {
   title: string;
   categoryId: string;
-  department: string;
-  workLocation: string;
-  employmentType: string;
-  workType: string;
-  educationLevel: string;
   experienceMin: string;
   experienceMax: string;
   salaryMin: string;
@@ -72,15 +72,13 @@ interface JobFormState {
 interface CategoryFormState {
   name: string;
   description: string;
-  parentId: string;
-  sortOrder: string;
   status: JobCategoryStatus;
 }
 
 interface TagGroupFormState {
   name: string;
   description: string;
-  sortOrder: string;
+  status: TagGroupStatus;
 }
 
 interface TagFormState {
@@ -89,6 +87,8 @@ interface TagFormState {
   color: string;
   status: TagStatus;
 }
+
+type JobTagSelections = Record<string, string>;
 
 const tabs: Array<{ id: TabId; label: string; icon: typeof Briefcase }> = [
   { id: "jobs", label: "Jobs", icon: Briefcase },
@@ -100,11 +100,6 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof Briefcase }> = [
 const defaultJobForm: JobFormState = {
   title: "",
   categoryId: "",
-  department: "",
-  workLocation: "",
-  employmentType: "",
-  workType: "",
-  educationLevel: "",
   experienceMin: "",
   experienceMax: "",
   salaryMin: "",
@@ -123,15 +118,13 @@ const defaultJobForm: JobFormState = {
 const defaultCategoryForm: CategoryFormState = {
   name: "",
   description: "",
-  parentId: "",
-  sortOrder: "",
   status: "active",
 };
 
 const defaultTagGroupForm: TagGroupFormState = {
   name: "",
   description: "",
-  sortOrder: "",
+  status: "active",
 };
 
 const defaultTagForm: TagFormState = {
@@ -153,8 +146,50 @@ function idToString(id: ApiId | undefined): string {
   return id === undefined ? "" : String(id);
 }
 
+function toNumericId(id: ApiId | undefined): number | undefined {
+  if (id === undefined) {
+    return undefined;
+  }
+  const parsed = Number(id);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getSelectedTagIds(selections: JobTagSelections): number[] {
+  return Object.values(selections).reduce<number[]>((tagIds, tagId) => {
+    const parsed = Number(tagId);
+    if (Number.isFinite(parsed)) {
+      tagIds.push(parsed);
+    }
+    return tagIds;
+  }, []);
+}
+
+function getJobTagSelections(tags: ApiTag[] | undefined): JobTagSelections {
+  return (tags ?? []).reduce<JobTagSelections>((selections, tagItem) => {
+    if (tagItem.groupId === undefined) {
+      return selections;
+    }
+    const numericId = toNumericId(tagItem.id);
+    if (numericId !== undefined) {
+      selections[String(tagItem.groupId)] = String(numericId);
+    }
+    return selections;
+  }, {});
+}
+
+function getUserLabel(user: User): string {
+  const name = user.realName || user.username || `User #${String(user.id)}`;
+  return user.email ? `${name} (${user.email})` : name;
+}
+
 function getErrorMessage(error: unknown, fallback: string): string {
-  return isRequestError(error) ? error.message : fallback;
+  if (isRequestError(error)) {
+    return error.message;
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  return fallback;
 }
 
 function getStatusStyle(status: string): string {
@@ -208,13 +243,13 @@ export default function JobsPage() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<JobCategory | null>(null);
   const [selectedTag, setSelectedTag] = useState<ApiTag | null>(null);
+  const [selectedTagGroup, setSelectedTagGroup] = useState<TagGroup | null>(null);
   const [jobForm, setJobForm] = useState<JobFormState>(defaultJobForm);
   const [categoryForm, setCategoryForm] = useState<CategoryFormState>(defaultCategoryForm);
   const [tagGroupForm, setTagGroupForm] = useState<TagGroupFormState>(defaultTagGroupForm);
   const [tagForm, setTagForm] = useState<TagFormState>(defaultTagForm);
-  const [memberUserId, setMemberUserId] = useState("");
-  const [memberRole, setMemberRole] = useState("reviewer");
-  const [selectedTagIds, setSelectedTagIds] = useState<Set<number>>(new Set());
+  const [jobTagSelections, setJobTagSelections] = useState<JobTagSelections>({});
+  const [jobTagsTouched, setJobTagsTouched] = useState(false);
 
   const [jobKeywordInput, setJobKeywordInput] = useState("");
   const [jobKeyword, setJobKeyword] = useState("");
@@ -259,6 +294,12 @@ export default function JobsPage() {
     queryFn: () => listJobCategories({ page: 1, pageSize: 200, status: "active" }),
   });
 
+  const ownerOptionsQuery = useQuery({
+    queryKey: ["users", "owner-options", { status: "active" }],
+    queryFn: () => listUsers({ page: 1, pageSize: 200, status: "active" }),
+    enabled: modal === "job",
+  });
+
   const tagGroupsQuery = useQuery({
     queryKey: ["tag-groups", { keyword: groupKeyword, status: groupStatus }],
     queryFn: () =>
@@ -288,8 +329,9 @@ export default function JobsPage() {
   });
 
   const tagOptionsQuery = useQuery({
-    queryKey: ["tags", "options"],
-    queryFn: () => listTags({ page: 1, pageSize: 200, status: "active" }),
+    queryKey: ["tags", "grouped", { status: "active" }],
+    queryFn: () => listGroupedTags({ status: "active" }),
+    enabled: modal === "job",
   });
 
   const categoryNameById = useMemo(() => {
@@ -305,7 +347,17 @@ export default function JobsPage() {
   }, [tagGroupOptionsQuery.data]);
 
   const createJobMutation = useMutation({
-    mutationFn: createJob,
+    mutationFn: async ({ payload, tagIds }: { payload: CreateJobRequest; tagIds: number[] }) => {
+      const createdJob = await createJob(payload);
+      if (tagIds.length > 0) {
+        const createdJobId = toNumericId(createdJob?.id);
+        if (createdJobId === undefined) {
+          throw new Error("Job was created, but the response did not include a job ID for tag binding.");
+        }
+        await bindJobTags(createdJobId, { tagIds });
+      }
+      return createdJob;
+    },
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -314,7 +366,12 @@ export default function JobsPage() {
   });
 
   const updateJobMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: ApiId; payload: UpdateJobRequest }) => updateJob(id, payload),
+    mutationFn: async ({ id, payload, tagIds }: { id: ApiId; payload: UpdateJobRequest; tagIds?: number[] }) => {
+      await updateJob(id, payload);
+      if (tagIds) {
+        await bindJobTags(id, { tagIds });
+      }
+    },
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -345,8 +402,19 @@ export default function JobsPage() {
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["tag-groups"] });
+      queryClient.invalidateQueries({ queryKey: ["tags", "grouped"] });
     },
     onError: (error) => setFormError(getErrorMessage(error, "Failed to create tag group.")),
+  });
+
+  const updateTagGroupMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: ApiId; payload: UpdateTagGroupRequest }) => updateTagGroup(id, payload),
+    onSuccess: () => {
+      closeModal();
+      queryClient.invalidateQueries({ queryKey: ["tag-groups"] });
+      queryClient.invalidateQueries({ queryKey: ["tags", "grouped"] });
+    },
+    onError: (error) => setFormError(getErrorMessage(error, "Failed to update tag group.")),
   });
 
   const createTagMutation = useMutation({
@@ -354,6 +422,7 @@ export default function JobsPage() {
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["tags"] });
+      queryClient.invalidateQueries({ queryKey: ["tags", "grouped"] });
     },
     onError: (error) => setFormError(getErrorMessage(error, "Failed to create tag.")),
   });
@@ -363,24 +432,9 @@ export default function JobsPage() {
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["tags"] });
+      queryClient.invalidateQueries({ queryKey: ["tags", "grouped"] });
     },
     onError: (error) => setFormError(getErrorMessage(error, "Failed to update tag.")),
-  });
-
-  const bindTagsMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: ApiId; payload: { tagIds: number[] } }) => bindJobTags(id, payload),
-    onSuccess: () => {
-      closeModal();
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
-    onError: (error) => setFormError(getErrorMessage(error, "Failed to bind tags.")),
-  });
-
-  const assignMemberMutation = useMutation({
-    mutationFn: ({ id, userId, memberRole }: { id: ApiId; userId: number; memberRole: string }) =>
-      assignJobMember(id, { userId, memberRole }),
-    onSuccess: () => closeModal(),
-    onError: (error) => setFormError(getErrorMessage(error, "Failed to assign member.")),
   });
 
   const closeModal = () => {
@@ -389,17 +443,19 @@ export default function JobsPage() {
     setSelectedJob(null);
     setSelectedCategory(null);
     setSelectedTag(null);
+    setSelectedTagGroup(null);
     setJobForm(defaultJobForm);
     setCategoryForm(defaultCategoryForm);
     setTagGroupForm(defaultTagGroupForm);
     setTagForm(defaultTagForm);
-    setMemberUserId("");
-    setMemberRole("reviewer");
-    setSelectedTagIds(new Set());
+    setJobTagSelections({});
+    setJobTagsTouched(false);
   };
 
   const openCreateJob = () => {
     setJobForm(defaultJobForm);
+    setJobTagSelections({});
+    setJobTagsTouched(false);
     setSelectedJob(null);
     setFormError(null);
     setModal("job");
@@ -410,11 +466,6 @@ export default function JobsPage() {
     setJobForm({
       title: job.title,
       categoryId: idToString(job.categoryId),
-      department: job.department ?? "",
-      workLocation: job.workLocation ?? "",
-      employmentType: job.employmentType ?? "",
-      workType: job.workType ?? "",
-      educationLevel: job.educationLevel ?? "",
       experienceMin: idToString(job.experienceMin),
       experienceMax: idToString(job.experienceMax),
       salaryMin: idToString(job.salaryMin),
@@ -429,6 +480,8 @@ export default function JobsPage() {
       requirements: job.requirements ?? "",
       bonusPoints: job.bonusPoints ?? "",
     });
+    setJobTagSelections(getJobTagSelections(job.tags));
+    setJobTagsTouched(false);
     setFormError(null);
     setModal("job");
   };
@@ -445,12 +498,28 @@ export default function JobsPage() {
     setCategoryForm({
       name: category.name,
       description: category.description ?? "",
-      parentId: idToString(category.parentId),
-      sortOrder: idToString(category.sortOrder),
       status: category.status === "disabled" ? "disabled" : "active",
     });
     setFormError(null);
     setModal("category");
+  };
+
+  const openCreateTagGroup = () => {
+    setTagGroupForm(defaultTagGroupForm);
+    setSelectedTagGroup(null);
+    setFormError(null);
+    setModal("group");
+  };
+
+  const openEditTagGroup = (group: TagGroup) => {
+    setSelectedTagGroup(group);
+    setTagGroupForm({
+      name: group.name,
+      description: group.description ?? "",
+      status: group.status === "disabled" ? "disabled" : "active",
+    });
+    setFormError(null);
+    setModal("group");
   };
 
   const openCreateTag = () => {
@@ -472,21 +541,6 @@ export default function JobsPage() {
     setModal("tag");
   };
 
-  const openBindTags = (job: Job) => {
-    setSelectedJob(job);
-    setSelectedTagIds(new Set());
-    setFormError(null);
-    setModal("bindTags");
-  };
-
-  const openAssignMember = (job: Job) => {
-    setSelectedJob(job);
-    setMemberUserId("");
-    setMemberRole("reviewer");
-    setFormError(null);
-    setModal("member");
-  };
-
   const submitJob = (event: FormEvent) => {
     event.preventDefault();
     setFormError(null);
@@ -499,11 +553,6 @@ export default function JobsPage() {
     const basePayload: CreateJobRequest = {
       title,
       categoryId: toOptionalNumber(jobForm.categoryId),
-      department: jobForm.department.trim() || undefined,
-      workLocation: jobForm.workLocation.trim() || undefined,
-      employmentType: jobForm.employmentType.trim() || undefined,
-      workType: jobForm.workType.trim() || undefined,
-      educationLevel: jobForm.educationLevel.trim() || undefined,
       experienceMin: toOptionalNumber(jobForm.experienceMin),
       experienceMax: toOptionalNumber(jobForm.experienceMax),
       salaryMin: toOptionalNumber(jobForm.salaryMin),
@@ -518,10 +567,12 @@ export default function JobsPage() {
       requirements: jobForm.requirements.trim() || undefined,
       bonusPoints: jobForm.bonusPoints.trim() || undefined,
     };
+    const tagIds = getSelectedTagIds(jobTagSelections);
 
     if (selectedJob) {
       updateJobMutation.mutate({
         id: selectedJob.id,
+        tagIds: jobTagsTouched ? tagIds : undefined,
         payload: {
           ...basePayload,
           priority: basePayload.priority || "medium",
@@ -531,7 +582,7 @@ export default function JobsPage() {
       return;
     }
 
-    createJobMutation.mutate(basePayload);
+    createJobMutation.mutate({ payload: basePayload, tagIds });
   };
 
   const submitCategory = (event: FormEvent) => {
@@ -546,8 +597,6 @@ export default function JobsPage() {
     const payload: CreateJobCategoryRequest = {
       name,
       description: categoryForm.description.trim() || undefined,
-      parentId: toOptionalNumber(categoryForm.parentId),
-      sortOrder: toOptionalNumber(categoryForm.sortOrder),
       status: categoryForm.status,
     };
 
@@ -577,8 +626,20 @@ export default function JobsPage() {
     const payload: CreateTagGroupRequest = {
       name,
       description: tagGroupForm.description.trim() || undefined,
-      sortOrder: toOptionalNumber(tagGroupForm.sortOrder),
+      status: tagGroupForm.status,
     };
+
+    if (selectedTagGroup) {
+      updateTagGroupMutation.mutate({
+        id: selectedTagGroup.id,
+        payload: {
+          ...payload,
+          status: tagGroupForm.status,
+        },
+      });
+      return;
+    }
+
     createTagGroupMutation.mutate(payload);
   };
 
@@ -595,6 +656,7 @@ export default function JobsPage() {
       name,
       groupId: toOptionalNumber(tagForm.groupId),
       color: tagForm.color.trim() || undefined,
+      status: tagForm.status,
     };
 
     if (selectedTag) {
@@ -611,54 +673,15 @@ export default function JobsPage() {
     createTagMutation.mutate(payload);
   };
 
-  const submitBindTags = (event: FormEvent) => {
-    event.preventDefault();
-    if (!selectedJob) {
-      return;
-    }
-    bindTagsMutation.mutate({ id: selectedJob.id, payload: { tagIds: Array.from(selectedTagIds) } });
-  };
-
-  const submitMember = (event: FormEvent) => {
-    event.preventDefault();
-    setFormError(null);
-    if (!selectedJob) {
-      return;
-    }
-    const userId = toOptionalNumber(memberUserId);
-    if (!userId) {
-      setFormError("User ID is required.");
-      return;
-    }
-    if (!memberRole.trim()) {
-      setFormError("Member role is required.");
-      return;
-    }
-    assignMemberMutation.mutate({ id: selectedJob.id, userId, memberRole: memberRole.trim() });
-  };
-
-  const toggleTagSelection = (tagId: number) => {
-    setSelectedTagIds((current) => {
-      const next = new Set(current);
-      if (next.has(tagId)) {
-        next.delete(tagId);
-      } else {
-        next.add(tagId);
-      }
-      return next;
-    });
-  };
-
   const isSaving =
     createJobMutation.isPending ||
     updateJobMutation.isPending ||
     createCategoryMutation.isPending ||
     updateCategoryMutation.isPending ||
     createTagGroupMutation.isPending ||
+    updateTagGroupMutation.isPending ||
     createTagMutation.isPending ||
-    updateTagMutation.isPending ||
-    bindTagsMutation.isPending ||
-    assignMemberMutation.isPending;
+    updateTagMutation.isPending;
 
   return (
     <div className="p-4 md:p-6 lg:p-8">
@@ -669,7 +692,7 @@ export default function JobsPage() {
         </div>
         <button
           type="button"
-          onClick={activeTab === "jobs" ? openCreateJob : activeTab === "categories" ? openCreateCategory : activeTab === "tags" ? openCreateTag : () => setModal("group")}
+          onClick={activeTab === "jobs" ? openCreateJob : activeTab === "categories" ? openCreateCategory : activeTab === "tags" ? openCreateTag : openCreateTagGroup}
           className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm text-white shadow-sm transition-colors hover:bg-blue-700 md:text-base"
         >
           <Plus className="h-5 w-5" />
@@ -743,26 +766,26 @@ export default function JobsPage() {
                           <StatusBadge value={job.status} />
                           {job.priority && <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${getPriorityStyle(job.priority)}`}>{job.priority}</span>}
                         </div>
-                        <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-3">
                           <span>Category: {job.categoryName ?? categoryNameById.get(String(job.categoryId)) ?? "-"}</span>
-                          <span>Department: {job.department || "-"}</span>
-                          <span>Location: {job.workLocation || "-"}</span>
                           <span>Headcount: {job.headcount ?? "-"}</span>
+                          <span>Owner: {(job.ownerName ?? idToString(job.ownerUserId)) || "-"}</span>
                         </div>
+                        {(job.tags ?? []).length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {(job.tags ?? []).map((tagItem) => (
+                              <span key={String(tagItem.id)} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 ring-1 ring-slate-200">
+                                {tagItem.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                         <p className="mt-3 line-clamp-2 text-sm text-gray-600">{job.description || job.requirements || "No description."}</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button type="button" onClick={() => openEditJob(job)} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
                           <Edit3 className="h-4 w-4" />
                           Edit
-                        </button>
-                        <button type="button" onClick={() => openBindTags(job)} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                          <Tag className="h-4 w-4" />
-                          Tags
-                        </button>
-                        <button type="button" onClick={() => openAssignMember(job)} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                          <UserPlus className="h-4 w-4" />
-                          Member
                         </button>
                       </div>
                     </div>
@@ -803,8 +826,7 @@ export default function JobsPage() {
                     <StatusBadge value={category.status} />
                   </div>
                   <p className="min-h-10 text-sm text-gray-600">{category.description || "No description."}</p>
-                  <div className="mt-4 flex items-center justify-between text-sm text-gray-500">
-                    <span>Sort: {category.sortOrder ?? "-"}</span>
+                  <div className="mt-4 flex justify-end">
                     <button type="button" onClick={() => openEditCategory(category)} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
                       <Edit3 className="h-4 w-4" />
                       Edit
@@ -891,11 +913,17 @@ export default function JobsPage() {
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h3 className="truncate text-base font-semibold text-gray-900">{group.name}</h3>
-                      <p className="mt-1 text-sm text-gray-500">Sort: {group.sortOrder ?? "-"}</p>
+                      <p className="mt-1 text-sm text-gray-500">ID: {String(group.id)}</p>
                     </div>
                     <StatusBadge value={group.status} />
                   </div>
                   <p className="text-sm text-gray-600">{group.description || "No description."}</p>
+                  <div className="mt-4 flex justify-end">
+                    <button type="button" onClick={() => openEditTagGroup(group)} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                      <Edit3 className="h-4 w-4" />
+                      Edit
+                    </button>
+                  </div>
                 </div>
               ))}
               {(tagGroupsQuery.data?.items ?? []).length === 0 && <EmptyState label="No tag groups found." />}
@@ -920,14 +948,19 @@ export default function JobsPage() {
                   ))}
                 </select>
               </label>
-              <Field label="Department" value={jobForm.department} onChange={(value) => setJobForm({ ...jobForm, department: value })} />
-              <Field label="Location" value={jobForm.workLocation} onChange={(value) => setJobForm({ ...jobForm, workLocation: value })} />
               <SelectField label="Status" value={jobForm.status} onChange={(value) => setJobForm({ ...jobForm, status: value })} options={["draft", "published", "closed"]} />
               <SelectField label="Priority" value={jobForm.priority} onChange={(value) => setJobForm({ ...jobForm, priority: value })} options={["low", "medium", "high", "urgent"]} />
-              <Field label="Employment Type" value={jobForm.employmentType} onChange={(value) => setJobForm({ ...jobForm, employmentType: value })} />
-              <Field label="Work Type" value={jobForm.workType} onChange={(value) => setJobForm({ ...jobForm, workType: value })} />
-              <Field label="Education" value={jobForm.educationLevel} onChange={(value) => setJobForm({ ...jobForm, educationLevel: value })} />
-              <Field label="Owner User ID" type="number" value={jobForm.ownerUserId} onChange={(value) => setJobForm({ ...jobForm, ownerUserId: value })} />
+              <label className="space-y-1 text-sm font-medium text-gray-700">
+                Owner
+                <select value={jobForm.ownerUserId} onChange={(event) => setJobForm({ ...jobForm, ownerUserId: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500">
+                  <option value="">Current user</option>
+                  {ownerOptionsQuery.data?.items.map((user) => (
+                    <option key={String(user.id)} value={String(user.id)}>
+                      {getUserLabel(user)}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <Field label="Experience Min" type="number" value={jobForm.experienceMin} onChange={(value) => setJobForm({ ...jobForm, experienceMin: value })} />
               <Field label="Experience Max" type="number" value={jobForm.experienceMax} onChange={(value) => setJobForm({ ...jobForm, experienceMax: value })} />
               <Field label="Salary Min" type="number" value={jobForm.salaryMin} onChange={(value) => setJobForm({ ...jobForm, salaryMin: value })} />
@@ -935,6 +968,34 @@ export default function JobsPage() {
               <Field label="Salary Months" type="number" value={jobForm.salaryMonths} onChange={(value) => setJobForm({ ...jobForm, salaryMonths: value })} />
               <Field label="Headcount" type="number" value={jobForm.headcount} onChange={(value) => setJobForm({ ...jobForm, headcount: value })} />
             </div>
+            <QueryState loading={tagOptionsQuery.isLoading} error={tagOptionsQuery.error} fallback="Failed to load grouped tags." />
+            {!tagOptionsQuery.isLoading && !tagOptionsQuery.isError && (tagOptionsQuery.data ?? []).length > 0 && (
+              <div className="grid gap-4 md:grid-cols-2">
+                {(tagOptionsQuery.data ?? []).map((group) => (
+                  <label key={String(group.id)} className="space-y-1 text-sm font-medium text-gray-700">
+                    {group.name}
+                    <select
+                      value={jobTagSelections[String(group.id)] ?? ""}
+                      onChange={(event) => {
+                        setJobTagsTouched(true);
+                        setJobTagSelections((current) => ({
+                          ...current,
+                          [String(group.id)]: event.target.value,
+                        }));
+                      }}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">None</option>
+                      {(group.tags ?? []).map((tagItem) => (
+                        <option key={String(tagItem.id)} value={String(tagItem.id)}>
+                          {tagItem.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            )}
             <TextArea label="Description" value={jobForm.description} onChange={(value) => setJobForm({ ...jobForm, description: value })} />
             <TextArea label="Responsibilities" value={jobForm.responsibilities} onChange={(value) => setJobForm({ ...jobForm, responsibilities: value })} />
             <TextArea label="Requirements" value={jobForm.requirements} onChange={(value) => setJobForm({ ...jobForm, requirements: value })} />
@@ -950,8 +1011,6 @@ export default function JobsPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Name" value={categoryForm.name} onChange={(value) => setCategoryForm({ ...categoryForm, name: value })} required />
               <SelectField label="Status" value={categoryForm.status} onChange={(value) => setCategoryForm({ ...categoryForm, status: value as JobCategoryStatus })} options={["active", "disabled"]} />
-              <Field label="Parent ID" type="number" value={categoryForm.parentId} onChange={(value) => setCategoryForm({ ...categoryForm, parentId: value })} />
-              <Field label="Sort Order" type="number" value={categoryForm.sortOrder} onChange={(value) => setCategoryForm({ ...categoryForm, sortOrder: value })} />
             </div>
             <TextArea label="Description" value={categoryForm.description} onChange={(value) => setCategoryForm({ ...categoryForm, description: value })} />
             <FormActions error={formError} isSaving={isSaving} onCancel={closeModal} />
@@ -960,11 +1019,11 @@ export default function JobsPage() {
       )}
 
       {modal === "group" && (
-        <Modal title="Create Tag Group" onClose={closeModal}>
+        <Modal title={selectedTagGroup ? "Edit Tag Group" : "Create Tag Group"} onClose={closeModal}>
           <form onSubmit={submitTagGroup} className="space-y-5 p-6">
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Name" value={tagGroupForm.name} onChange={(value) => setTagGroupForm({ ...tagGroupForm, name: value })} required />
-              <Field label="Sort Order" type="number" value={tagGroupForm.sortOrder} onChange={(value) => setTagGroupForm({ ...tagGroupForm, sortOrder: value })} />
+              <SelectField label="Status" value={tagGroupForm.status} onChange={(value) => setTagGroupForm({ ...tagGroupForm, status: value as TagGroupStatus })} options={["active", "disabled"]} />
             </div>
             <TextArea label="Description" value={tagGroupForm.description} onChange={(value) => setTagGroupForm({ ...tagGroupForm, description: value })} />
             <FormActions error={formError} isSaving={isSaving} onCancel={closeModal} />
@@ -996,41 +1055,6 @@ export default function JobsPage() {
         </Modal>
       )}
 
-      {modal === "bindTags" && selectedJob && (
-        <Modal title={`Bind Tags: ${selectedJob.title}`} onClose={closeModal}>
-          <form onSubmit={submitBindTags} className="space-y-5 p-6">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {(tagOptionsQuery.data?.items ?? []).map((tagItem) => {
-                const numericId = Number(tagItem.id);
-                const disabled = !Number.isFinite(numericId);
-                const checked = selectedTagIds.has(numericId);
-                return (
-                  <label key={String(tagItem.id)} className={`flex items-center gap-3 rounded-lg border border-gray-200 p-3 text-sm ${disabled ? "opacity-50" : "cursor-pointer hover:bg-gray-50"}`}>
-                    <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleTagSelection(numericId)} className="h-4 w-4 rounded border-gray-300 text-blue-600" />
-                    <span className="h-3 w-3 rounded-full ring-1 ring-gray-200" style={{ backgroundColor: tagItem.color || "#2563eb" }} />
-                    <span className="font-medium text-gray-800">{tagItem.name}</span>
-                    <span className="text-gray-500">{tagItem.groupName ?? tagGroupNameById.get(String(tagItem.groupId)) ?? ""}</span>
-                  </label>
-                );
-              })}
-              {(tagOptionsQuery.data?.items ?? []).length === 0 && <EmptyState label="No active tags available." />}
-            </div>
-            <FormActions error={formError} isSaving={isSaving} onCancel={closeModal} />
-          </form>
-        </Modal>
-      )}
-
-      {modal === "member" && selectedJob && (
-        <Modal title={`Assign Member: ${selectedJob.title}`} onClose={closeModal}>
-          <form onSubmit={submitMember} className="space-y-5 p-6">
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="User ID" type="number" value={memberUserId} onChange={setMemberUserId} required />
-              <Field label="Member Role" value={memberRole} onChange={setMemberRole} required />
-            </div>
-            <FormActions error={formError} isSaving={isSaving} onCancel={closeModal} />
-          </form>
-        </Modal>
-      )}
     </div>
   );
 }

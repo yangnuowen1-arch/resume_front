@@ -89,11 +89,6 @@ export interface UpdateJobRequest {
   workType?: string;
 }
 
-export interface AssignJobMemberRequest {
-  userId: number;
-  memberRole: string;
-}
-
 export interface BindJobTagsRequest {
   tagIds: number[];
 }
@@ -113,16 +108,12 @@ export function listJobs(params: ListJobsParams = {}): Promise<ListJobsResponse>
   });
 }
 
-export function createJob(payload: CreateJobRequest): Promise<void> {
-  return request.post<void, CreateJobRequest>("/jobs", payload);
+export function createJob(payload: CreateJobRequest): Promise<Job> {
+  return request.post<Job, CreateJobRequest>("/jobs", payload);
 }
 
 export function updateJob(id: ApiId, payload: UpdateJobRequest): Promise<void> {
   return request.put<void, UpdateJobRequest>(`/jobs/${id}`, payload);
-}
-
-export function assignJobMember(id: ApiId, payload: AssignJobMemberRequest): Promise<void> {
-  return request.post<void, AssignJobMemberRequest>(`/jobs/${id}/members`, payload);
 }
 
 export function bindJobTags(id: ApiId, payload: BindJobTagsRequest): Promise<void> {
