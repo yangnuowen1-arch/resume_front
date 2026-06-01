@@ -9,14 +9,16 @@ import {
   Search,
   Tag,
   Tags,
+  Trash2,
   X,
 } from "lucide-react";
 import {
-  bindJobTags,
   createJob,
   createJobCategory,
   createTag,
   createTagGroup,
+  deleteJob,
+  getJob,
   listGroupedTags,
   listJobCategories,
   listJobs,
@@ -54,8 +56,6 @@ type ModalId = "job" | "category" | "tag" | "group" | null;
 interface JobFormState {
   title: string;
   categoryId: string;
-  experienceMin: string;
-  experienceMax: string;
   salaryMin: string;
   salaryMax: string;
   salaryMonths: string;
@@ -100,14 +100,12 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof Briefcase }> = [
 const defaultJobForm: JobFormState = {
   title: "",
   categoryId: "",
-  experienceMin: "",
-  experienceMax: "",
   salaryMin: "",
   salaryMax: "",
   salaryMonths: "",
   headcount: "",
   ownerUserId: "",
-  priority: "medium",
+  priority: "normal",
   status: "draft",
   description: "",
   responsibilities: "",
@@ -142,16 +140,35 @@ function toOptionalNumber(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function idToString(id: ApiId | undefined): string {
-  return id === undefined ? "" : String(id);
+function toNullableNumber(value: string): number | null {
+  if (!value.trim()) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function toNumericId(id: ApiId | undefined): number | undefined {
-  if (id === undefined) {
+function idToString(id: ApiId | number | null | undefined): string {
+  return id === undefined || id === null ? "" : String(id);
+}
+
+function toNumericId(id: ApiId | number | null | undefined): number | undefined {
+  if (id === undefined || id === null) {
     return undefined;
   }
   const parsed = Number(id);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getTagId(tagItem: ApiTag): ApiId | undefined {
+  return tagItem.id ?? tagItem.tagId;
+}
+
+function normalizePriority(priority: string | undefined): string {
+  if (!priority || priority === "medium") {
+    return "normal";
+  }
+  return priority;
 }
 
 function getSelectedTagIds(selections: JobTagSelections): number[] {
@@ -169,7 +186,7 @@ function getJobTagSelections(tags: ApiTag[] | undefined): JobTagSelections {
     if (tagItem.groupId === undefined) {
       return selections;
     }
-    const numericId = toNumericId(tagItem.id);
+    const numericId = toNumericId(getTagId(tagItem));
     if (numericId !== undefined) {
       selections[String(tagItem.groupId)] = String(numericId);
     }
@@ -250,6 +267,9 @@ export default function JobsPage() {
   const [tagForm, setTagForm] = useState<TagFormState>(defaultTagForm);
   const [jobTagSelections, setJobTagSelections] = useState<JobTagSelections>({});
   const [jobTagsTouched, setJobTagsTouched] = useState(false);
+  const [loadingJobId, setLoadingJobId] = useState<ApiId | null>(null);
+  const [deletingJobId, setDeletingJobId] = useState<ApiId | null>(null);
+  const [jobActionError, setJobActionError] = useState<string | null>(null);
 
   const [jobKeywordInput, setJobKeywordInput] = useState("");
   const [jobKeyword, setJobKeyword] = useState("");
@@ -334,6 +354,11 @@ export default function JobsPage() {
     enabled: modal === "job",
   });
 
+  const ownerOptions = ownerOptionsQuery.data?.items ?? [];
+  const selectedOwnerId = idToString(selectedJob?.ownerUserId);
+  const shouldShowSelectedOwnerFallback =
+    selectedOwnerId.length > 0 && !ownerOptions.some((user) => String(user.id) === selectedOwnerId);
+
   const categoryNameById = useMemo(() => {
     const map = new Map<string, string>();
     categoryOptionsQuery.data?.items.forEach((category) => map.set(String(category.id), category.name));
@@ -346,18 +371,29 @@ export default function JobsPage() {
     return map;
   }, [tagGroupOptionsQuery.data]);
 
+  const populateJobForm = (job: Job) => {
+    setSelectedJob(job);
+    setJobForm({
+      title: job.title,
+      categoryId: idToString(job.categoryId),
+      salaryMin: idToString(job.salaryMin),
+      salaryMax: idToString(job.salaryMax),
+      salaryMonths: idToString(job.salaryMonths),
+      headcount: idToString(job.headcount),
+      ownerUserId: idToString(job.ownerUserId),
+      priority: normalizePriority(job.priority),
+      status: job.status || "draft",
+      description: job.description ?? "",
+      responsibilities: job.responsibilities ?? "",
+      requirements: job.requirements ?? "",
+      bonusPoints: job.bonusPoints ?? "",
+    });
+    setJobTagSelections(getJobTagSelections(job.tags));
+    setJobTagsTouched(false);
+  };
+
   const createJobMutation = useMutation({
-    mutationFn: async ({ payload, tagIds }: { payload: CreateJobRequest; tagIds: number[] }) => {
-      const createdJob = await createJob(payload);
-      if (tagIds.length > 0) {
-        const createdJobId = toNumericId(createdJob?.id);
-        if (createdJobId === undefined) {
-          throw new Error("Job was created, but the response did not include a job ID for tag binding.");
-        }
-        await bindJobTags(createdJobId, { tagIds });
-      }
-      return createdJob;
-    },
+    mutationFn: createJob,
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -366,17 +402,22 @@ export default function JobsPage() {
   });
 
   const updateJobMutation = useMutation({
-    mutationFn: async ({ id, payload, tagIds }: { id: ApiId; payload: UpdateJobRequest; tagIds?: number[] }) => {
-      await updateJob(id, payload);
-      if (tagIds) {
-        await bindJobTags(id, { tagIds });
-      }
-    },
+    mutationFn: ({ id, payload }: { id: ApiId; payload: UpdateJobRequest }) => updateJob(id, payload),
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
     onError: (error) => setFormError(getErrorMessage(error, "Failed to update job.")),
+  });
+
+  const deleteJobMutation = useMutation({
+    mutationFn: deleteJob,
+    onSuccess: () => {
+      setJobActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (error) => setJobActionError(getErrorMessage(error, "Failed to delete job.")),
+    onSettled: () => setDeletingJobId(null),
   });
 
   const createCategoryMutation = useMutation({
@@ -458,32 +499,33 @@ export default function JobsPage() {
     setJobTagsTouched(false);
     setSelectedJob(null);
     setFormError(null);
+    setJobActionError(null);
     setModal("job");
   };
 
-  const openEditJob = (job: Job) => {
-    setSelectedJob(job);
-    setJobForm({
-      title: job.title,
-      categoryId: idToString(job.categoryId),
-      experienceMin: idToString(job.experienceMin),
-      experienceMax: idToString(job.experienceMax),
-      salaryMin: idToString(job.salaryMin),
-      salaryMax: idToString(job.salaryMax),
-      salaryMonths: idToString(job.salaryMonths),
-      headcount: idToString(job.headcount),
-      ownerUserId: idToString(job.ownerUserId),
-      priority: job.priority ?? "medium",
-      status: job.status || "draft",
-      description: job.description ?? "",
-      responsibilities: job.responsibilities ?? "",
-      requirements: job.requirements ?? "",
-      bonusPoints: job.bonusPoints ?? "",
-    });
-    setJobTagSelections(getJobTagSelections(job.tags));
-    setJobTagsTouched(false);
+  const openEditJob = async (job: Job) => {
+    setLoadingJobId(job.id);
+    setJobActionError(null);
     setFormError(null);
-    setModal("job");
+    try {
+      const jobDetail = await getJob(job.id);
+      populateJobForm(jobDetail);
+      setModal("job");
+    } catch (error) {
+      setJobActionError(getErrorMessage(error, "Failed to load job details."));
+    } finally {
+      setLoadingJobId(null);
+    }
+  };
+
+  const handleDeleteJob = (job: Job) => {
+    const confirmed = window.confirm(`Delete job "${job.title}"?`);
+    if (!confirmed) {
+      return;
+    }
+    setDeletingJobId(job.id);
+    setJobActionError(null);
+    deleteJobMutation.mutate(job.id);
   };
 
   const openCreateCategory = () => {
@@ -545,44 +587,77 @@ export default function JobsPage() {
     event.preventDefault();
     setFormError(null);
     const title = jobForm.title.trim();
+    const priority = normalizePriority(jobForm.priority.trim());
+    const status = jobForm.status.trim();
     if (!title) {
       setFormError("Job title is required.");
       return;
     }
+    if (!status) {
+      setFormError("Job status is required.");
+      return;
+    }
+    if (!priority) {
+      setFormError("Job priority is required.");
+      return;
+    }
 
-    const basePayload: CreateJobRequest = {
-      title,
-      categoryId: toOptionalNumber(jobForm.categoryId),
-      experienceMin: toOptionalNumber(jobForm.experienceMin),
-      experienceMax: toOptionalNumber(jobForm.experienceMax),
-      salaryMin: toOptionalNumber(jobForm.salaryMin),
-      salaryMax: toOptionalNumber(jobForm.salaryMax),
-      salaryMonths: toOptionalNumber(jobForm.salaryMonths),
-      headcount: toOptionalNumber(jobForm.headcount),
-      ownerUserId: toOptionalNumber(jobForm.ownerUserId),
-      priority: jobForm.priority.trim() || undefined,
-      status: jobForm.status,
-      description: jobForm.description.trim() || undefined,
-      responsibilities: jobForm.responsibilities.trim() || undefined,
-      requirements: jobForm.requirements.trim() || undefined,
-      bonusPoints: jobForm.bonusPoints.trim() || undefined,
-    };
     const tagIds = getSelectedTagIds(jobTagSelections);
 
     if (selectedJob) {
+      const updatePayload: UpdateJobRequest = {
+        title,
+        categoryId: toNullableNumber(jobForm.categoryId),
+        salaryMin: toNullableNumber(jobForm.salaryMin),
+        salaryMax: toNullableNumber(jobForm.salaryMax),
+        salaryMonths: toNullableNumber(jobForm.salaryMonths),
+        headcount: toNullableNumber(jobForm.headcount),
+        priority,
+        status,
+        description: jobForm.description.trim(),
+        responsibilities: jobForm.responsibilities.trim(),
+        requirements: jobForm.requirements.trim(),
+        bonusPoints: jobForm.bonusPoints.trim(),
+        tagIds: jobTagsTouched ? tagIds : undefined,
+      };
+      const ownerUserId = toOptionalNumber(jobForm.ownerUserId);
+      if (ownerUserId !== undefined) {
+        updatePayload.ownerUserId = ownerUserId;
+      }
       updateJobMutation.mutate({
         id: selectedJob.id,
-        tagIds: jobTagsTouched ? tagIds : undefined,
-        payload: {
-          ...basePayload,
-          priority: basePayload.priority || "medium",
-          status: basePayload.status || "draft",
-        },
+        payload: updatePayload,
       });
       return;
     }
 
-    createJobMutation.mutate({ payload: basePayload, tagIds });
+    const createPayload: CreateJobRequest = {
+      title,
+      status,
+      priority,
+    };
+    const categoryId = toOptionalNumber(jobForm.categoryId);
+    const salaryMin = toOptionalNumber(jobForm.salaryMin);
+    const salaryMax = toOptionalNumber(jobForm.salaryMax);
+    const salaryMonths = toOptionalNumber(jobForm.salaryMonths);
+    const headcount = toOptionalNumber(jobForm.headcount);
+    const ownerUserId = toOptionalNumber(jobForm.ownerUserId);
+    const description = jobForm.description.trim();
+    const responsibilities = jobForm.responsibilities.trim();
+    const requirements = jobForm.requirements.trim();
+    const bonusPoints = jobForm.bonusPoints.trim();
+    if (categoryId !== undefined) createPayload.categoryId = categoryId;
+    if (salaryMin !== undefined) createPayload.salaryMin = salaryMin;
+    if (salaryMax !== undefined) createPayload.salaryMax = salaryMax;
+    if (salaryMonths !== undefined) createPayload.salaryMonths = salaryMonths;
+    if (headcount !== undefined) createPayload.headcount = headcount;
+    if (ownerUserId !== undefined) createPayload.ownerUserId = ownerUserId;
+    if (description) createPayload.description = description;
+    if (responsibilities) createPayload.responsibilities = responsibilities;
+    if (requirements) createPayload.requirements = requirements;
+    if (bonusPoints) createPayload.bonusPoints = bonusPoints;
+    if (tagIds.length > 0) createPayload.tagIds = tagIds;
+    createJobMutation.mutate(createPayload);
   };
 
   const submitCategory = (event: FormEvent) => {
@@ -751,46 +826,66 @@ export default function JobsPage() {
           </div>
 
           <QueryState loading={jobsQuery.isLoading} error={jobsQuery.error} fallback="Failed to load jobs." />
+          {jobActionError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{jobActionError}</div>}
           {!jobsQuery.isLoading && !jobsQuery.isError && (
             <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
               <div className="border-b border-gray-200 px-4 py-3 text-sm text-gray-500">
                 Total {jobsQuery.data?.total ?? 0} jobs
               </div>
               <div className="divide-y divide-gray-200">
-                {(jobsQuery.data?.items ?? []).map((job) => (
-                  <div key={String(job.id)} className="p-4 transition-colors hover:bg-gray-50">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-2 flex flex-wrap items-center gap-2">
-                          <h3 className="truncate text-lg font-semibold text-gray-900">{job.title}</h3>
-                          <StatusBadge value={job.status} />
-                          {job.priority && <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${getPriorityStyle(job.priority)}`}>{job.priority}</span>}
-                        </div>
-                        <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-3">
-                          <span>Category: {job.categoryName ?? categoryNameById.get(String(job.categoryId)) ?? "-"}</span>
-                          <span>Headcount: {job.headcount ?? "-"}</span>
-                          <span>Owner: {(job.ownerName ?? idToString(job.ownerUserId)) || "-"}</span>
-                        </div>
-                        {(job.tags ?? []).length > 0 && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {(job.tags ?? []).map((tagItem) => (
-                              <span key={String(tagItem.id)} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 ring-1 ring-slate-200">
-                                {tagItem.name}
-                              </span>
-                            ))}
+                {(jobsQuery.data?.items ?? []).map((job) => {
+                  const isLoadingThisJob = String(loadingJobId) === String(job.id);
+                  const isDeletingThisJob = String(deletingJobId) === String(job.id);
+                  const isJobActionBusy = loadingJobId !== null || deletingJobId !== null;
+                  return (
+                    <div key={String(job.id)} className="p-4 transition-colors hover:bg-gray-50">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <h3 className="truncate text-lg font-semibold text-gray-900">{job.title}</h3>
+                            <StatusBadge value={job.status} />
+                            {job.priority && <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${getPriorityStyle(job.priority)}`}>{job.priority}</span>}
                           </div>
-                        )}
-                        <p className="mt-3 line-clamp-2 text-sm text-gray-600">{job.description || job.requirements || "No description."}</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={() => openEditJob(job)} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                          <Edit3 className="h-4 w-4" />
-                          Edit
-                        </button>
+                          <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-3">
+                            <span>Category: {job.categoryName ?? categoryNameById.get(String(job.categoryId)) ?? "-"}</span>
+                            <span>Headcount: {job.headcount ?? "-"}</span>
+                            <span>Owner: {(job.ownerName ?? idToString(job.ownerUserId)) || "-"}</span>
+                          </div>
+                          {(job.tags ?? []).length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {(job.tags ?? []).map((tagItem) => (
+                                <span key={String(getTagId(tagItem) ?? tagItem.name)} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 ring-1 ring-slate-200">
+                                  {tagItem.name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <p className="mt-3 line-clamp-2 text-sm text-gray-600">{job.description || job.requirements || "No description."}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openEditJob(job)}
+                            disabled={isJobActionBusy}
+                            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isLoadingThisJob ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Edit3 className="h-4 w-4" />}
+                            {isLoadingThisJob ? "Loading" : "Edit"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteJob(job)}
+                            disabled={isJobActionBusy}
+                            className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-2 text-sm text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isDeletingThisJob ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                            {isDeletingThisJob ? "Deleting" : "Delete"}
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {(jobsQuery.data?.items ?? []).length === 0 && <EmptyState label="No jobs found." />}
               </div>
             </div>
@@ -949,20 +1044,19 @@ export default function JobsPage() {
                 </select>
               </label>
               <SelectField label="Status" value={jobForm.status} onChange={(value) => setJobForm({ ...jobForm, status: value })} options={["draft", "published", "closed"]} />
-              <SelectField label="Priority" value={jobForm.priority} onChange={(value) => setJobForm({ ...jobForm, priority: value })} options={["low", "medium", "high", "urgent"]} />
+              <SelectField label="Priority" value={jobForm.priority} onChange={(value) => setJobForm({ ...jobForm, priority: value })} options={["normal", "low", "high", "urgent"]} />
               <label className="space-y-1 text-sm font-medium text-gray-700">
                 Owner
                 <select value={jobForm.ownerUserId} onChange={(event) => setJobForm({ ...jobForm, ownerUserId: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500">
-                  <option value="">Current user</option>
-                  {ownerOptionsQuery.data?.items.map((user) => (
+                  <option value="">{selectedJob ? "Keep current owner" : "Current user"}</option>
+                  {shouldShowSelectedOwnerFallback && <option value={selectedOwnerId}>Current owner #{selectedOwnerId}</option>}
+                  {ownerOptions.map((user) => (
                     <option key={String(user.id)} value={String(user.id)}>
                       {getUserLabel(user)}
                     </option>
                   ))}
                 </select>
               </label>
-              <Field label="Experience Min" type="number" value={jobForm.experienceMin} onChange={(value) => setJobForm({ ...jobForm, experienceMin: value })} />
-              <Field label="Experience Max" type="number" value={jobForm.experienceMax} onChange={(value) => setJobForm({ ...jobForm, experienceMax: value })} />
               <Field label="Salary Min" type="number" value={jobForm.salaryMin} onChange={(value) => setJobForm({ ...jobForm, salaryMin: value })} />
               <Field label="Salary Max" type="number" value={jobForm.salaryMax} onChange={(value) => setJobForm({ ...jobForm, salaryMax: value })} />
               <Field label="Salary Months" type="number" value={jobForm.salaryMonths} onChange={(value) => setJobForm({ ...jobForm, salaryMonths: value })} />
@@ -986,11 +1080,17 @@ export default function JobsPage() {
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="">None</option>
-                      {(group.tags ?? []).map((tagItem) => (
-                        <option key={String(tagItem.id)} value={String(tagItem.id)}>
-                          {tagItem.name}
-                        </option>
-                      ))}
+                      {(group.tags ?? []).map((tagItem) => {
+                        const tagId = getTagId(tagItem);
+                        if (tagId === undefined) {
+                          return null;
+                        }
+                        return (
+                          <option key={String(tagId)} value={String(tagId)}>
+                            {tagItem.name}
+                          </option>
+                        );
+                      })}
                     </select>
                   </label>
                 ))}

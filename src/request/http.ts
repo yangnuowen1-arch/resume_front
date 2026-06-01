@@ -120,7 +120,7 @@ export function clearAccessToken(): void {
   notifyAccessTokenChanged();
 }
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "";
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 const apiSuccessCodes = parseSuccessCodes(import.meta.env.VITE_API_SUCCESS_CODES);
 
 export const http = axios.create({

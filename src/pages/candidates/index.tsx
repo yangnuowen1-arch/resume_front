@@ -1,14 +1,21 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Edit3, LoaderCircle, Plus, Save, Search, X } from "lucide-react";
+import { Edit3, FileText, LoaderCircle, Plus, Save, Search, Sparkles, X } from "lucide-react";
 import {
+  CANDIDATE_STATUS_OPTIONS,
+  batchAnalyzeCandidates,
   createCandidate,
   listCandidates,
+  listJobCategories,
+  listJobs,
   updateCandidate,
+  uploadCandidateResume,
   type ApiId,
   type Candidate,
-  type CreateCandidateRequest,
+  type JobCategory,
+  type Job,
   type UpdateCandidateRequest,
+  type UploadCandidateResumeRequest,
 } from "../../api";
 import { isRequestError, queryClient } from "../../request";
 
@@ -23,8 +30,14 @@ interface CandidateFormState {
   major: string;
   highestEducation: string;
   currentCompany: string;
+  positionCategoryId: string;
+  currentJobId: string;
   currentPosition: string;
   yearsOfExperience: string;
+  status: string;
+  rawText: string;
+  language: string;
+  file: File | null;
 }
 
 const defaultForm: CandidateFormState = {
@@ -32,15 +45,43 @@ const defaultForm: CandidateFormState = {
   email: "",
   phone: "",
   gender: "",
-  source: "manual",
+  source: "boss",
   location: "",
   school: "",
   major: "",
   highestEducation: "",
   currentCompany: "",
+  positionCategoryId: "",
+  currentJobId: "",
   currentPosition: "",
   yearsOfExperience: "",
+  status: "pending_review",
+  rawText: "",
+  language: "",
+  file: null,
 };
+
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
+const GENDER_OPTIONS: SelectOption[] = [
+  { value: "男", label: "男" },
+  { value: "女", label: "女" },
+];
+
+const SOURCE_OPTIONS: SelectOption[] = [
+  { value: "boss", label: "boss" },
+  { value: "email", label: "邮箱" },
+];
+
+const EDUCATION_OPTIONS: SelectOption[] = [
+  { value: "专科", label: "专科" },
+  { value: "本科", label: "本科" },
+  { value: "硕士", label: "硕士" },
+  { value: "博士", label: "博士" },
+];
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return isRequestError(error) ? error.message : fallback;
@@ -62,6 +103,64 @@ function compact(value: string): string | undefined {
   return value.trim() || undefined;
 }
 
+function normalizeGender(value: string | undefined): string {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  if (["1", "m", "male", "男"].includes(normalized)) {
+    return "男";
+  }
+  if (["0", "2", "f", "female", "女"].includes(normalized)) {
+    return "女";
+  }
+  return "";
+}
+
+function normalizeSource(value: string | undefined): string {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized === "boss") {
+    return "boss";
+  }
+  if (["email", "mail", "邮箱"].includes(normalized)) {
+    return "email";
+  }
+  return "";
+}
+
+function normalizeEducation(value: string | undefined): string {
+  const normalized = value?.trim() ?? "";
+  return EDUCATION_OPTIONS.some((option) => option.value === normalized) ? normalized : "";
+}
+
+function normalizeStatus(value: string | undefined): string {
+  const normalized = value?.trim() ?? "";
+  return CANDIDATE_STATUS_OPTIONS.some((option) => option.value === normalized) ? normalized : defaultForm.status;
+}
+
+function idToNumber(id: ApiId | undefined): number | undefined {
+  if (id === undefined) {
+    return undefined;
+  }
+  const parsed = Number(id);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getCategoryOptions(categories: JobCategory[] | undefined): SelectOption[] {
+  return (categories ?? []).map((category) => ({ value: String(category.id), label: category.name }));
+}
+
+function getPositionOptions(jobs: Job[] | undefined, currentJobId: string, currentPosition: string): SelectOption[] {
+  const options = (jobs ?? []).map((job) => ({ value: String(job.id), label: job.title }));
+  if (currentJobId && !options.some((option) => option.value === currentJobId)) {
+    return [{ value: currentJobId, label: currentPosition || `#${currentJobId}` }, ...options];
+  }
+  return options;
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) {
@@ -70,24 +169,76 @@ function initials(name: string): string {
   return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join("");
 }
 
+function getCandidateStatusLabel(status: string | undefined): string {
+  if (!status) {
+    return "-";
+  }
+  return CANDIDATE_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
+}
+
+function getSelectOptionLabel(options: SelectOption[], value: string | undefined): string {
+  if (!value) {
+    return "-";
+  }
+  return options.find((option) => option.value === value)?.label ?? value;
+}
+
+function getStatusStyle(status: string | undefined): string {
+  if (status === "evaluated" || status === "hired" || status === "offered") {
+    return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  }
+  if (status === "evaluating" || status === "interview") {
+    return "bg-sky-50 text-sky-700 ring-sky-200";
+  }
+  if (status === "rejected") {
+    return "bg-rose-50 text-rose-700 ring-rose-200";
+  }
+  return "bg-amber-50 text-amber-700 ring-amber-200";
+}
+
+function formatScore(score: number | null | undefined): string {
+  return typeof score === "number" ? score.toFixed(1) : "-";
+}
+
 export default function CandidatesPage() {
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
   const [source, setSource] = useState("");
+  const [status, setStatus] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
   const [form, setForm] = useState<CandidateFormState>(defaultForm);
   const [formError, setFormError] = useState<string | null>(null);
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(() => new Set());
+  const [batchMessage, setBatchMessage] = useState<string | null>(null);
 
   const candidatesQuery = useQuery({
-    queryKey: ["candidates", { keyword, source }],
+    queryKey: ["candidates", { keyword, source, status }],
     queryFn: () =>
       listCandidates({
         page: 1,
         pageSize: 50,
         keyword: keyword || undefined,
         source: source || undefined,
+        status: status || undefined,
       }),
+  });
+
+  const jobCategoriesQuery = useQuery({
+    queryKey: ["job-categories", "candidate-options"],
+    queryFn: () => listJobCategories({ page: 1, pageSize: 200, status: "active" }),
+  });
+
+  const jobsQuery = useQuery({
+    queryKey: ["jobs", "candidate-options", form.positionCategoryId],
+    queryFn: () =>
+      listJobs({
+        page: 1,
+        pageSize: 200,
+        categoryId: form.positionCategoryId ? Number(form.positionCategoryId) : undefined,
+        status: "published",
+      }),
+    enabled: modalOpen && !!form.positionCategoryId,
   });
 
   const createCandidateMutation = useMutation({
@@ -100,12 +251,28 @@ export default function CandidatesPage() {
   });
 
   const updateCandidateMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: ApiId; payload: UpdateCandidateRequest }) => updateCandidate(id, payload),
+    mutationFn: async ({ id, payload, resume }: { id: ApiId; payload: UpdateCandidateRequest; resume?: UploadCandidateResumeRequest }) => {
+      const response = await updateCandidate(id, payload);
+      if (resume) {
+        await uploadCandidateResume(id, resume);
+      }
+      return response;
+    },
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
     },
     onError: (error) => setFormError(getErrorMessage(error, "Failed to update candidate.")),
+  });
+
+  const batchAnalyzeMutation = useMutation({
+    mutationFn: batchAnalyzeCandidates,
+    onSuccess: (result) => {
+      setBatchMessage(`Queued ${result.queued}/${result.total}; failed ${result.failed}.`);
+      setSelectedCandidateIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
+    },
+    onError: (error) => setBatchMessage(getErrorMessage(error, "Failed to analyze selected candidates.")),
   });
 
   const isSaving = createCandidateMutation.isPending || updateCandidateMutation.isPending;
@@ -125,31 +292,40 @@ export default function CandidatesPage() {
   };
 
   const openEdit = (candidate: Candidate) => {
+    const currentPosition = candidate.currentPosition ?? candidate.jobTitle ?? "";
     setSelectedCandidate(candidate);
     setForm({
       name: candidate.name,
       email: candidate.email ?? "",
       phone: candidate.phone ?? "",
-      gender: candidate.gender ?? "",
-      source: candidate.source ?? "",
+      gender: normalizeGender(candidate.gender),
+      source: normalizeSource(candidate.source),
       location: candidate.location ?? "",
       school: candidate.school ?? "",
       major: candidate.major ?? "",
-      highestEducation: candidate.highestEducation ?? "",
+      highestEducation: normalizeEducation(candidate.highestEducation),
       currentCompany: candidate.currentCompany ?? "",
-      currentPosition: candidate.currentPosition ?? "",
+      positionCategoryId: idToString(candidate.positionCategoryId),
+      currentJobId: idToString(candidate.currentJobId ?? candidate.jobId),
+      currentPosition,
       yearsOfExperience: idToString(candidate.yearsOfExperience),
+      status: normalizeStatus(candidate.status),
+      rawText: "",
+      language: "",
+      file: null,
     });
     setFormError(null);
     setModalOpen(true);
   };
 
-  const buildPayload = (): CreateCandidateRequest | null => {
+  const buildCommonPayload = (): UpdateCandidateRequest | null => {
     const name = form.name.trim();
     if (!name) {
       setFormError("Candidate name is required.");
       return null;
     }
+
+    const status = normalizeStatus(form.status);
 
     return {
       name,
@@ -162,25 +338,79 @@ export default function CandidatesPage() {
       major: compact(form.major),
       highestEducation: compact(form.highestEducation),
       currentCompany: compact(form.currentCompany),
+      positionCategoryId: idToNumber(form.positionCategoryId),
+      currentJobId: idToNumber(form.currentJobId),
       currentPosition: compact(form.currentPosition),
       yearsOfExperience: toOptionalNumber(form.yearsOfExperience),
+      status,
     };
   };
 
   const submitCandidate = (event: FormEvent) => {
     event.preventDefault();
     setFormError(null);
-    const payload = buildPayload();
-    if (!payload) {
+    const commonPayload = buildCommonPayload();
+    if (!commonPayload) {
       return;
     }
 
     if (selectedCandidate) {
-      updateCandidateMutation.mutate({ id: selectedCandidate.id, payload });
+      updateCandidateMutation.mutate({
+        id: selectedCandidate.id,
+        payload: commonPayload,
+        resume: form.file
+          ? {
+              file: form.file,
+              rawText: compact(form.rawText),
+              language: compact(form.language),
+            }
+          : undefined,
+      });
       return;
     }
 
-    createCandidateMutation.mutate(payload);
+    if (!form.file) {
+      setFormError("Resume file is required.");
+      return;
+    }
+
+    createCandidateMutation.mutate({
+      ...commonPayload,
+      file: form.file,
+      rawText: compact(form.rawText),
+      language: compact(form.language),
+    });
+  };
+
+  const currentCandidates = candidatesQuery.data?.items ?? [];
+  const selectedBatchCandidateIds = currentCandidates.filter((candidate) => selectedCandidateIds.has(String(candidate.id))).map((candidate) => candidate.id);
+  const selectedBatchCount = selectedBatchCandidateIds.length;
+  const categoryOptions = getCategoryOptions(jobCategoriesQuery.data?.items);
+  const currentPositionOptions = getPositionOptions(jobsQuery.data?.items, form.currentJobId, form.currentPosition);
+
+  const toggleCandidateSelection = (candidateId: ApiId, checked: boolean) => {
+    setSelectedCandidateIds((current) => {
+      const next = new Set(current);
+      const key = String(candidateId);
+      if (checked) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      return next;
+    });
+  };
+
+  const submitBatchAnalyze = () => {
+    setBatchMessage(null);
+    if (selectedBatchCount === 0) {
+      setBatchMessage("Select at least one candidate.");
+      return;
+    }
+
+    batchAnalyzeMutation.mutate({
+      candidateIds: selectedBatchCandidateIds,
+    });
   };
 
   return (
@@ -201,19 +431,44 @@ export default function CandidatesPage() {
       </div>
 
       <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_auto]">
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px_180px_auto]">
           <SearchBox value={keywordInput} placeholder="Search name, email, or phone..." onChange={setKeywordInput} onSubmit={() => setKeyword(keywordInput.trim())} />
-          <input
-            type="text"
-            value={source}
-            onChange={(event) => setSource(event.target.value)}
-            placeholder="Source"
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
-          />
+          <select value={source} onChange={(event) => setSource(event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500">
+            <option value="">All Sources</option>
+            {SOURCE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500">
+            <option value="">All Status</option>
+            {CANDIDATE_STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <button type="button" onClick={() => setKeyword(keywordInput.trim())} className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800">
             Search
           </button>
         </div>
+      </section>
+
+      <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm font-medium text-gray-700">Selected {selectedBatchCount}</div>
+          <button
+            type="button"
+            onClick={submitBatchAnalyze}
+            disabled={batchAnalyzeMutation.isPending || selectedBatchCount === 0}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {batchAnalyzeMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            Batch Analyze
+          </button>
+        </div>
+        {batchMessage && <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">{batchMessage}</div>}
       </section>
 
       <QueryState loading={candidatesQuery.isLoading} error={candidatesQuery.error} fallback="Failed to load candidates." />
@@ -227,20 +482,39 @@ export default function CandidatesPage() {
               <div key={String(candidate.id)} className="p-4 transition-colors hover:bg-gray-50">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="flex min-w-0 gap-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedCandidateIds.has(String(candidate.id))}
+                      onChange={(event) => toggleCandidateSelection(candidate.id, event.target.checked)}
+                      aria-label={`Select ${candidate.name}`}
+                      className="mt-3 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-semibold text-blue-700">
                       {initials(candidate.name)}
                     </div>
                     <div className="min-w-0">
                       <div className="mb-1 flex flex-wrap items-center gap-2">
                         <h3 className="truncate text-base font-semibold text-gray-900">{candidate.name}</h3>
-                        {candidate.source && <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-200">{candidate.source}</span>}
+                        {candidate.status && <StatusBadge value={candidate.status} />}
+                        {candidate.source && <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-200">{getSelectOptionLabel(SOURCE_OPTIONS, candidate.source)}</span>}
                       </div>
                       <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-4">
                         <span>Email: {candidate.email || "-"}</span>
                         <span>Phone: {candidate.phone || "-"}</span>
                         <span>Location: {candidate.location || "-"}</span>
                         <span>Experience: {candidate.yearsOfExperience ?? "-"} years</span>
+                        <span>Position: {candidate.position || candidate.jobTitle || candidate.currentPosition || "-"}</span>
+                        <span>AI Score: {formatScore(candidate.aiScore)}</span>
+                        <span>Screening: {candidate.screeningStatus || "-"}</span>
+                        <span>Resume: {candidate.resumeFilename || (candidate.resumeId ? `#${String(candidate.resumeId)}` : "-")}</span>
+                        <span>Job: {candidate.jobTitle || (candidate.jobId ? `#${String(candidate.jobId)}` : "-")}</span>
                       </div>
+                      {candidate.resumeFileUrl && (
+                        <a href={candidate.resumeFileUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:text-blue-800">
+                          <FileText className="h-4 w-4" />
+                          {candidate.resumeFilename || "Open resume"}
+                        </a>
+                      )}
                       <p className="mt-2 text-sm text-gray-600">
                         {[candidate.currentPosition, candidate.currentCompany].filter(Boolean).join(" · ") || [candidate.school, candidate.major].filter(Boolean).join(" · ") || "No career or education info."}
                       </p>
@@ -261,20 +535,45 @@ export default function CandidatesPage() {
       {modalOpen && (
         <Modal title={selectedCandidate ? "Edit Candidate" : "Create Candidate"} onClose={closeModal}>
           <form onSubmit={submitCandidate} className="space-y-5 p-6">
+            <FileField label={selectedCandidate ? "Replace Resume" : "Resume File"} file={form.file} onChange={(file) => setForm({ ...form, file })} required={!selectedCandidate} />
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required />
               <Field label="Email" type="email" value={form.email} onChange={(value) => setForm({ ...form, email: value })} />
               <Field label="Phone" value={form.phone} onChange={(value) => setForm({ ...form, phone: value })} />
-              <Field label="Gender" value={form.gender} onChange={(value) => setForm({ ...form, gender: value })} />
-              <Field label="Source" value={form.source} onChange={(value) => setForm({ ...form, source: value })} />
+              <SelectField label="Gender" value={form.gender} onChange={(value) => setForm({ ...form, gender: value })} options={GENDER_OPTIONS} placeholder="请选择性别" />
+              <SelectField label="Source" value={form.source} onChange={(value) => setForm({ ...form, source: value })} options={SOURCE_OPTIONS} placeholder="请选择来源" />
+              <SelectField label="Status" value={form.status} onChange={(value) => setForm({ ...form, status: value })} options={CANDIDATE_STATUS_OPTIONS} placeholder="请选择状态" />
               <Field label="Location" value={form.location} onChange={(value) => setForm({ ...form, location: value })} />
               <Field label="School" value={form.school} onChange={(value) => setForm({ ...form, school: value })} />
               <Field label="Major" value={form.major} onChange={(value) => setForm({ ...form, major: value })} />
-              <Field label="Highest Education" value={form.highestEducation} onChange={(value) => setForm({ ...form, highestEducation: value })} />
+              <SelectField label="Highest Education" value={form.highestEducation} onChange={(value) => setForm({ ...form, highestEducation: value })} options={EDUCATION_OPTIONS} placeholder="请选择学历" />
               <Field label="Years of Experience" type="number" value={form.yearsOfExperience} onChange={(value) => setForm({ ...form, yearsOfExperience: value })} />
               <Field label="Current Company" value={form.currentCompany} onChange={(value) => setForm({ ...form, currentCompany: value })} />
-              <Field label="Current Position" value={form.currentPosition} onChange={(value) => setForm({ ...form, currentPosition: value })} />
+              <SelectField
+                label="Position Category"
+                value={form.positionCategoryId}
+                onChange={(value) => setForm({ ...form, positionCategoryId: value, currentJobId: "", currentPosition: "" })}
+                options={categoryOptions}
+                placeholder="请选择职位类别"
+              />
+              <SelectField
+                label="Current Position"
+                value={form.currentJobId}
+                onChange={(value) => {
+                  const selectedJob = jobsQuery.data?.items.find((job) => String(job.id) === value);
+                  setForm({
+                    ...form,
+                    currentJobId: value,
+                    currentPosition: selectedJob?.title ?? "",
+                  });
+                }}
+                options={currentPositionOptions}
+                placeholder={form.positionCategoryId ? "请选择具体职位" : "先选择职位类别"}
+                disabled={!form.positionCategoryId}
+              />
+              {(!selectedCandidate || form.file !== null) && <Field label="Language" value={form.language} onChange={(value) => setForm({ ...form, language: value })} />}
             </div>
+            {(!selectedCandidate || form.file !== null) && <TextArea label="Raw Text" value={form.rawText} onChange={(value) => setForm({ ...form, rawText: value })} />}
             <FormActions error={formError} isSaving={isSaving} onCancel={closeModal} />
           </form>
         </Modal>
@@ -342,6 +641,10 @@ function EmptyState({ label }: { label: string }) {
   return <div className="rounded-lg border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500">{label}</div>;
 }
 
+function StatusBadge({ value }: { value: string }) {
+  return <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${getStatusStyle(value)}`}>{getCandidateStatusLabel(value)}</span>;
+}
+
 function Field({ label, value, onChange, type = "text", required }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
   return (
     <label className="space-y-1 text-sm font-medium text-gray-700">
@@ -350,6 +653,70 @@ function Field({ label, value, onChange, type = "text", required }: { label: str
         type={type}
         value={value}
         required={required}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500"
+      />
+    </label>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: SelectOption[];
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="space-y-1 text-sm font-medium text-gray-700">
+      {label}
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500"
+      >
+        {placeholder && <option value="">{placeholder}</option>}
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function FileField({ label, file, onChange, required }: { label: string; file: File | null; onChange: (file: File | null) => void; required?: boolean }) {
+  return (
+    <label className="space-y-1 text-sm font-medium text-gray-700">
+      {label}
+      <input
+        type="file"
+        required={required}
+        onChange={(event) => onChange(event.target.files?.[0] ?? null)}
+        className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal file:mr-3 file:rounded-md file:border-0 file:bg-gray-900 file:px-3 file:py-1.5 file:text-sm file:text-white focus:border-transparent focus:ring-2 focus:ring-blue-500"
+      />
+      {file && <span className="block text-xs font-normal text-gray-500">{file.name}</span>}
+    </label>
+  );
+}
+
+function TextArea({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="space-y-1 text-sm font-medium text-gray-700">
+      {label}
+      <textarea
+        rows={3}
+        value={value}
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500"
       />

@@ -2,14 +2,26 @@ export { login, register } from "./auth";
 export type { LoginResponse } from "./auth";
 export { createApplication, listApplications } from "./applications";
 export type { Application, ApplicationStatus, CreateApplicationRequest, ListApplicationsParams, ListApplicationsResponse } from "./applications";
-export { createCandidate, listCandidates, updateCandidate } from "./candidates";
-export type { Candidate, CreateCandidateRequest, ListCandidatesParams, ListCandidatesResponse, UpdateCandidateRequest } from "./candidates";
+export { CANDIDATE_STATUS_OPTIONS, batchAnalyzeCandidates, createCandidate, listCandidates, updateCandidate, uploadCandidateResume } from "./candidates";
+export type {
+  BatchAnalyzeCandidateItem,
+  BatchAnalyzeCandidatesRequest,
+  BatchAnalyzeCandidatesResponse,
+  Candidate,
+  CandidateStatus,
+  CreateCandidateRequest,
+  CreateCandidateResponse,
+  ListCandidatesParams,
+  ListCandidatesResponse,
+  UpdateCandidateRequest,
+  UpdateCandidateResponse,
+  UploadCandidateResumeRequest,
+  UploadCandidateResumeResponse,
+} from "./candidates";
 export { createJobCategory, listJobCategories, updateJobCategory } from "./job-categories";
 export type { CreateJobCategoryRequest, JobCategory, JobCategoryStatus, ListJobCategoriesParams, ListJobCategoriesResponse, UpdateJobCategoryRequest } from "./job-categories";
-export { bindJobTags, createJob, listJobs, updateJob } from "./jobs";
-export type { CreateJobRequest, Job, JobStatus, ListJobsParams, ListJobsResponse, UpdateJobRequest } from "./jobs";
-export { listResumes, uploadResume } from "./resumes";
-export type { ListResumesParams, ListResumesResponse, ResumeResponse, UploadResumeRequest } from "./resumes";
+export { bindJobTags, createJob, deleteJob, getJob, listJobs, updateJob } from "./jobs";
+export type { CreateJobRequest, Job, JobDynamicFields, JobDynamicFieldValue, JobMutationResponse, JobStatus, ListJobsParams, ListJobsResponse, UpdateJobRequest } from "./jobs";
 export { createTagGroup, listGroupedTags, listTagGroups, updateTagGroup } from "./tag-groups";
 export type { CreateTagGroupRequest, GroupedTagGroup, ListTagGroupsParams, ListTagGroupsResponse, TagGroup, TagGroupStatus, UpdateTagGroupRequest } from "./tag-groups";
 export { createTag, listTags, updateTag } from "./tags";

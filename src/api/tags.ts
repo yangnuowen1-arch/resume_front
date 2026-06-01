@@ -5,6 +5,8 @@ export type TagStatus = "active" | "disabled";
 
 export interface Tag {
   id: ApiId;
+  tagId?: ApiId;
+  jobId?: ApiId;
   name: string;
   groupId?: number;
   groupName?: string;
