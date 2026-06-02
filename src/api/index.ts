@@ -2,7 +2,7 @@ export { login, register } from "./auth";
 export type { LoginResponse } from "./auth";
 export { createApplication, listApplications } from "./applications";
 export type { Application, ApplicationStatus, CreateApplicationRequest, ListApplicationsParams, ListApplicationsResponse } from "./applications";
-export { CANDIDATE_STATUS_OPTIONS, batchAnalyzeCandidates, createCandidate, listCandidates, updateCandidate, uploadCandidateResume } from "./candidates";
+export { CANDIDATE_STATUS_OPTIONS, batchAnalyzeCandidates, createCandidate, listCandidates, updateCandidate } from "./candidates";
 export type {
   BatchAnalyzeCandidateItem,
   BatchAnalyzeCandidatesRequest,
@@ -15,8 +15,6 @@ export type {
   ListCandidatesResponse,
   UpdateCandidateRequest,
   UpdateCandidateResponse,
-  UploadCandidateResumeRequest,
-  UploadCandidateResumeResponse,
 } from "./candidates";
 export { createJobCategory, listJobCategories, updateJobCategory } from "./job-categories";
 export type { CreateJobCategoryRequest, JobCategory, JobCategoryStatus, ListJobCategoriesParams, ListJobCategoriesResponse, UpdateJobCategoryRequest } from "./job-categories";

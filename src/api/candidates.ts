@@ -36,6 +36,7 @@ export interface Candidate {
   resumeId?: ApiId;
   resumeFilename?: string;
   resumeFileUrl?: string;
+  resumeLanguage?: string;
   resumeUploadedAt?: string;
   resumeEvaluated?: boolean;
   screeningStatus?: string;
@@ -43,8 +44,19 @@ export interface Candidate {
   applicationId?: ApiId;
   jobId?: ApiId;
   jobTitle?: string;
+  currentJobTitle?: string;
+  currentJob?: CandidateJob;
+  job?: CandidateJob;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface CandidateJob {
+  id: ApiId;
+  title?: string;
+  categoryId?: ApiId | null;
+  categoryName?: string;
+  status?: string;
 }
 
 export interface ListCandidatesParams {
@@ -84,6 +96,7 @@ export interface CreateCandidateResponse {
 }
 
 export interface UpdateCandidateRequest {
+  file?: File;
   name: string;
   email?: string;
   phone?: string;
@@ -99,19 +112,11 @@ export interface UpdateCandidateRequest {
   currentJobId?: ApiId;
   currentPosition?: string;
   yearsOfExperience?: number;
-}
-
-export interface UpdateCandidateResponse {
-  id: ApiId;
-}
-
-export interface UploadCandidateResumeRequest {
-  file: File;
   rawText?: string;
   language?: string;
 }
 
-export interface UploadCandidateResumeResponse {
+export interface UpdateCandidateResponse {
   id: ApiId;
   resumeId?: ApiId;
 }
@@ -180,17 +185,28 @@ export function createCandidate(payload: CreateCandidateRequest): Promise<Create
 }
 
 export function updateCandidate(id: ApiId, payload: UpdateCandidateRequest): Promise<UpdateCandidateResponse> {
-  return request.put<UpdateCandidateResponse, UpdateCandidateRequest>(`/candidates/${id}`, payload);
-}
-
-export function uploadCandidateResume(id: ApiId, payload: UploadCandidateResumeRequest): Promise<UploadCandidateResumeResponse> {
   const formData = new FormData();
-  formData.append("file", payload.file);
+  formData.append("name", payload.name);
 
+  if (payload.file) formData.append("file", payload.file);
+  if (payload.email) formData.append("email", payload.email);
+  if (payload.phone) formData.append("phone", payload.phone);
+  if (payload.gender) formData.append("gender", payload.gender);
+  if (payload.currentCompany) formData.append("currentCompany", payload.currentCompany);
+  if (payload.positionCategoryId !== undefined) formData.append("positionCategoryId", String(payload.positionCategoryId));
+  if (payload.currentJobId !== undefined) formData.append("currentJobId", String(payload.currentJobId));
+  if (payload.currentPosition) formData.append("currentPosition", payload.currentPosition);
+  if (payload.yearsOfExperience !== undefined) formData.append("yearsOfExperience", String(payload.yearsOfExperience));
+  if (payload.highestEducation) formData.append("highestEducation", payload.highestEducation);
+  if (payload.school) formData.append("school", payload.school);
+  if (payload.major) formData.append("major", payload.major);
+  if (payload.location) formData.append("location", payload.location);
+  if (payload.source) formData.append("source", payload.source);
+  if (payload.status) formData.append("status", payload.status);
   if (payload.rawText) formData.append("rawText", payload.rawText);
   if (payload.language) formData.append("language", payload.language);
 
-  return request.post<UploadCandidateResumeResponse, FormData>(`/candidates/${id}/resume`, formData);
+  return request.put<UpdateCandidateResponse, FormData>(`/candidates/${id}`, formData);
 }
 
 export function batchAnalyzeCandidates(payload: BatchAnalyzeCandidatesRequest): Promise<BatchAnalyzeCandidatesResponse> {

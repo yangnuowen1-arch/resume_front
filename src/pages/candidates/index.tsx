@@ -9,13 +9,11 @@ import {
   listJobCategories,
   listJobs,
   updateCandidate,
-  uploadCandidateResume,
   type ApiId,
   type Candidate,
   type JobCategory,
   type Job,
   type UpdateCandidateRequest,
-  type UploadCandidateResumeRequest,
 } from "../../api";
 import { isRequestError, queryClient } from "../../request";
 
@@ -161,6 +159,26 @@ function getPositionOptions(jobs: Job[] | undefined, currentJobId: string, curre
   return options;
 }
 
+function getCandidateJobId(candidate: Candidate): ApiId | undefined {
+  return candidate.currentJob?.id ?? candidate.job?.id ?? candidate.currentJobId ?? candidate.jobId;
+}
+
+function getCandidateJobTitle(candidate: Candidate, jobTitleById?: Map<string, string>): string {
+  const jobId = getCandidateJobId(candidate);
+  return (
+    candidate.jobTitle ||
+    candidate.currentJobTitle ||
+    candidate.currentJob?.title ||
+    candidate.job?.title ||
+    (jobId !== undefined ? jobTitleById?.get(String(jobId)) : undefined) ||
+    ""
+  );
+}
+
+function getCandidatePosition(candidate: Candidate, jobTitleById?: Map<string, string>): string {
+  return candidate.position || getCandidateJobTitle(candidate, jobTitleById) || candidate.currentPosition || "-";
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) {
@@ -241,6 +259,15 @@ export default function CandidatesPage() {
     enabled: modalOpen && !!form.positionCategoryId,
   });
 
+  const jobsLookupQuery = useQuery({
+    queryKey: ["jobs", "candidate-card-lookup"],
+    queryFn: () => listJobs({ page: 1, pageSize: 200, status: "published" }),
+    enabled:
+      !candidatesQuery.isLoading &&
+      !candidatesQuery.isError &&
+      (candidatesQuery.data?.items ?? []).some((candidate) => getCandidateJobId(candidate) !== undefined),
+  });
+
   const createCandidateMutation = useMutation({
     mutationFn: createCandidate,
     onSuccess: () => {
@@ -251,13 +278,7 @@ export default function CandidatesPage() {
   });
 
   const updateCandidateMutation = useMutation({
-    mutationFn: async ({ id, payload, resume }: { id: ApiId; payload: UpdateCandidateRequest; resume?: UploadCandidateResumeRequest }) => {
-      const response = await updateCandidate(id, payload);
-      if (resume) {
-        await uploadCandidateResume(id, resume);
-      }
-      return response;
-    },
+    mutationFn: ({ id, payload }: { id: ApiId; payload: UpdateCandidateRequest }) => updateCandidate(id, payload),
     onSuccess: () => {
       closeModal();
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
@@ -292,7 +313,8 @@ export default function CandidatesPage() {
   };
 
   const openEdit = (candidate: Candidate) => {
-    const currentPosition = candidate.currentPosition ?? candidate.jobTitle ?? "";
+    const currentJobId = getCandidateJobId(candidate);
+    const currentPosition = candidate.currentPosition ?? getCandidateJobTitle(candidate);
     setSelectedCandidate(candidate);
     setForm({
       name: candidate.name,
@@ -306,12 +328,12 @@ export default function CandidatesPage() {
       highestEducation: normalizeEducation(candidate.highestEducation),
       currentCompany: candidate.currentCompany ?? "",
       positionCategoryId: idToString(candidate.positionCategoryId),
-      currentJobId: idToString(candidate.currentJobId ?? candidate.jobId),
+      currentJobId: idToString(currentJobId),
       currentPosition,
       yearsOfExperience: idToString(candidate.yearsOfExperience),
       status: normalizeStatus(candidate.status),
       rawText: "",
-      language: "",
+      language: candidate.resumeLanguage ?? "",
       file: null,
     });
     setFormError(null);
@@ -357,14 +379,12 @@ export default function CandidatesPage() {
     if (selectedCandidate) {
       updateCandidateMutation.mutate({
         id: selectedCandidate.id,
-        payload: commonPayload,
-        resume: form.file
-          ? {
-              file: form.file,
-              rawText: compact(form.rawText),
-              language: compact(form.language),
-            }
-          : undefined,
+        payload: {
+          ...commonPayload,
+          file: form.file ?? undefined,
+          rawText: form.file ? compact(form.rawText) : undefined,
+          language: compact(form.language),
+        },
       });
       return;
     }
@@ -387,6 +407,7 @@ export default function CandidatesPage() {
   const selectedBatchCount = selectedBatchCandidateIds.length;
   const categoryOptions = getCategoryOptions(jobCategoriesQuery.data?.items);
   const currentPositionOptions = getPositionOptions(jobsQuery.data?.items, form.currentJobId, form.currentPosition);
+  const jobTitleById = new Map((jobsLookupQuery.data?.items ?? []).map((job) => [String(job.id), job.title]));
 
   const toggleCandidateSelection = (candidateId: ApiId, checked: boolean) => {
     setSelectedCandidateIds((current) => {
@@ -478,55 +499,58 @@ export default function CandidatesPage() {
             Total {candidatesQuery.data?.total ?? 0} candidates
           </div>
           <div className="divide-y divide-gray-200">
-            {(candidatesQuery.data?.items ?? []).map((candidate) => (
-              <div key={String(candidate.id)} className="p-4 transition-colors hover:bg-gray-50">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="flex min-w-0 gap-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedCandidateIds.has(String(candidate.id))}
-                      onChange={(event) => toggleCandidateSelection(candidate.id, event.target.checked)}
-                      aria-label={`Select ${candidate.name}`}
-                      className="mt-3 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-semibold text-blue-700">
-                      {initials(candidate.name)}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="mb-1 flex flex-wrap items-center gap-2">
-                        <h3 className="truncate text-base font-semibold text-gray-900">{candidate.name}</h3>
-                        {candidate.status && <StatusBadge value={candidate.status} />}
-                        {candidate.source && <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-200">{getSelectOptionLabel(SOURCE_OPTIONS, candidate.source)}</span>}
+            {(candidatesQuery.data?.items ?? []).map((candidate) => {
+              const positionLabel = getCandidatePosition(candidate, jobTitleById);
+
+              return (
+                <div key={String(candidate.id)} className="p-4 transition-colors hover:bg-gray-50">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="flex min-w-0 gap-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedCandidateIds.has(String(candidate.id))}
+                        onChange={(event) => toggleCandidateSelection(candidate.id, event.target.checked)}
+                        aria-label={`Select ${candidate.name}`}
+                        className="mt-3 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-semibold text-blue-700">
+                        {initials(candidate.name)}
                       </div>
-                      <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-4">
-                        <span>Email: {candidate.email || "-"}</span>
-                        <span>Phone: {candidate.phone || "-"}</span>
-                        <span>Location: {candidate.location || "-"}</span>
-                        <span>Experience: {candidate.yearsOfExperience ?? "-"} years</span>
-                        <span>Position: {candidate.position || candidate.jobTitle || candidate.currentPosition || "-"}</span>
-                        <span>AI Score: {formatScore(candidate.aiScore)}</span>
-                        <span>Screening: {candidate.screeningStatus || "-"}</span>
-                        <span>Resume: {candidate.resumeFilename || (candidate.resumeId ? `#${String(candidate.resumeId)}` : "-")}</span>
-                        <span>Job: {candidate.jobTitle || (candidate.jobId ? `#${String(candidate.jobId)}` : "-")}</span>
+                      <div className="min-w-0">
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <h3 className="truncate text-base font-semibold text-gray-900">{candidate.name}</h3>
+                          {candidate.status && <StatusBadge value={candidate.status} />}
+                          {candidate.source && <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-200">{getSelectOptionLabel(SOURCE_OPTIONS, candidate.source)}</span>}
+                        </div>
+                        <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-4">
+                          <span>Email: {candidate.email || "-"}</span>
+                          <span>Phone: {candidate.phone || "-"}</span>
+                          <span>Location: {candidate.location || "-"}</span>
+                          <span>Experience: {candidate.yearsOfExperience ?? "-"} years</span>
+                          <span>Position: {positionLabel}</span>
+                          <span>AI Score: {formatScore(candidate.aiScore)}</span>
+                          <span>Screening: {candidate.screeningStatus || "-"}</span>
+                          <span>Resume: {candidate.resumeFilename || (candidate.resumeId ? `#${String(candidate.resumeId)}` : "-")}</span>
+                        </div>
+                        {candidate.resumeFileUrl && (
+                          <a href={candidate.resumeFileUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:text-blue-800">
+                            <FileText className="h-4 w-4" />
+                            {candidate.resumeFilename || "Open resume"}
+                          </a>
+                        )}
+                        <p className="mt-2 text-sm text-gray-600">
+                          {[candidate.currentPosition, candidate.currentCompany].filter(Boolean).join(" · ") || [candidate.school, candidate.major].filter(Boolean).join(" · ") || "No career or education info."}
+                        </p>
                       </div>
-                      {candidate.resumeFileUrl && (
-                        <a href={candidate.resumeFileUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:text-blue-800">
-                          <FileText className="h-4 w-4" />
-                          {candidate.resumeFilename || "Open resume"}
-                        </a>
-                      )}
-                      <p className="mt-2 text-sm text-gray-600">
-                        {[candidate.currentPosition, candidate.currentCompany].filter(Boolean).join(" · ") || [candidate.school, candidate.major].filter(Boolean).join(" · ") || "No career or education info."}
-                      </p>
                     </div>
+                    <button type="button" onClick={() => openEdit(candidate)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                      <Edit3 className="h-4 w-4" />
+                      Edit
+                    </button>
                   </div>
-                  <button type="button" onClick={() => openEdit(candidate)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                    <Edit3 className="h-4 w-4" />
-                    Edit
-                  </button>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {(candidatesQuery.data?.items ?? []).length === 0 && <EmptyState label="No candidates found." />}
           </div>
         </section>
@@ -536,6 +560,7 @@ export default function CandidatesPage() {
         <Modal title={selectedCandidate ? "Edit Candidate" : "Create Candidate"} onClose={closeModal}>
           <form onSubmit={submitCandidate} className="space-y-5 p-6">
             <FileField label={selectedCandidate ? "Replace Resume" : "Resume File"} file={form.file} onChange={(file) => setForm({ ...form, file })} required={!selectedCandidate} />
+            {selectedCandidate?.resumeFileUrl && <ResumeLink url={selectedCandidate.resumeFileUrl} filename={selectedCandidate.resumeFilename} />}
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required />
               <Field label="Email" type="email" value={form.email} onChange={(value) => setForm({ ...form, email: value })} />
@@ -571,7 +596,7 @@ export default function CandidatesPage() {
                 placeholder={form.positionCategoryId ? "请选择具体职位" : "先选择职位类别"}
                 disabled={!form.positionCategoryId}
               />
-              {(!selectedCandidate || form.file !== null) && <Field label="Language" value={form.language} onChange={(value) => setForm({ ...form, language: value })} />}
+              <Field label="Resume Language" value={form.language} onChange={(value) => setForm({ ...form, language: value })} />
             </div>
             {(!selectedCandidate || form.file !== null) && <TextArea label="Raw Text" value={form.rawText} onChange={(value) => setForm({ ...form, rawText: value })} />}
             <FormActions error={formError} isSaving={isSaving} onCancel={closeModal} />
@@ -707,6 +732,17 @@ function FileField({ label, file, onChange, required }: { label: string; file: F
       />
       {file && <span className="block text-xs font-normal text-gray-500">{file.name}</span>}
     </label>
+  );
+}
+
+function ResumeLink({ url, filename }: { url: string; filename?: string }) {
+  return (
+    <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+      <a href={url} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-blue-700 hover:text-blue-800">
+        <FileText className="h-4 w-4 shrink-0" />
+        <span className="truncate">{filename || "Current resume"}</span>
+      </a>
+    </div>
   );
 }
 

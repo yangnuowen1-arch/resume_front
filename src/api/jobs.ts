@@ -28,6 +28,9 @@ export interface Job {
   headcount?: number | null;
   ownerUserId?: number | null;
   ownerName?: string;
+  ownerRealName?: string;
+  createdBy?: number | null;
+  creatorRealName?: string;
   priority?: string;
   status: JobStatus | string;
   dynamicFields?: JobDynamicFields;
@@ -97,7 +100,6 @@ export interface BindJobTagsRequest {
 export function listJobs(params: ListJobsParams = {}): Promise<ListJobsResponse> {
   const page = params.page ?? 1;
   const pageSize = params.pageSize ?? 20;
-
   return request.get<ApiPaginatedResponse<Job>>("/jobs", {
     params: {
       page,

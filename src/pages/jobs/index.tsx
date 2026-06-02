@@ -106,7 +106,7 @@ const defaultJobForm: JobFormState = {
   headcount: "",
   ownerUserId: "",
   priority: "normal",
-  status: "draft",
+  status: "all",
   description: "",
   responsibilities: "",
   requirements: "",
@@ -199,6 +199,14 @@ function getUserLabel(user: User): string {
   return user.email ? `${name} (${user.email})` : name;
 }
 
+function getJobOwnerLabel(job: Job): string {
+  return job.ownerRealName || job.ownerName || idToString(job.ownerUserId) || "-";
+}
+
+function getJobCreatorLabel(job: Job): string {
+  return job.creatorRealName || idToString(job.createdBy) || "-";
+}
+
 function getErrorMessage(error: unknown, fallback: string): string {
   if (isRequestError(error)) {
     return error.message;
@@ -273,7 +281,7 @@ export default function JobsPage() {
 
   const [jobKeywordInput, setJobKeywordInput] = useState("");
   const [jobKeyword, setJobKeyword] = useState("");
-  const [jobStatus, setJobStatus] = useState("");
+  const [jobStatus, setJobStatus] = useState("all");
   const [jobCategoryId, setJobCategoryId] = useState("");
   const [categoryKeywordInput, setCategoryKeywordInput] = useState("");
   const [categoryKeyword, setCategoryKeyword] = useState("");
@@ -285,6 +293,7 @@ export default function JobsPage() {
   const [groupKeywordInput, setGroupKeywordInput] = useState("");
   const [groupKeyword, setGroupKeyword] = useState("");
   const [groupStatus, setGroupStatus] = useState("");
+
 
   const jobsQuery = useQuery({
     queryKey: ["jobs", { keyword: jobKeyword, status: jobStatus, categoryId: jobCategoryId }],
@@ -356,6 +365,7 @@ export default function JobsPage() {
 
   const ownerOptions = ownerOptionsQuery.data?.items ?? [];
   const selectedOwnerId = idToString(selectedJob?.ownerUserId);
+  const selectedOwnerLabel = selectedJob ? getJobOwnerLabel(selectedJob) : "";
   const shouldShowSelectedOwnerFallback =
     selectedOwnerId.length > 0 && !ownerOptions.some((user) => String(user.id) === selectedOwnerId);
 
@@ -814,7 +824,7 @@ export default function JobsPage() {
                 ))}
               </select>
               <select value={jobStatus} onChange={(event) => setJobStatus(event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500">
-                <option value="">All Status</option>
+                <option value="all">All Status</option>
                 <option value="draft">Draft</option>
                 <option value="published">Published</option>
                 <option value="closed">Closed</option>
@@ -849,7 +859,8 @@ export default function JobsPage() {
                           <div className="grid gap-2 text-sm text-gray-600 md:grid-cols-2 xl:grid-cols-3">
                             <span>Category: {job.categoryName ?? categoryNameById.get(String(job.categoryId)) ?? "-"}</span>
                             <span>Headcount: {job.headcount ?? "-"}</span>
-                            <span>Owner: {(job.ownerName ?? idToString(job.ownerUserId)) || "-"}</span>
+                            <span>Owner: {getJobOwnerLabel(job)}</span>
+                            <span>Creator: {getJobCreatorLabel(job)}</span>
                           </div>
                           {(job.tags ?? []).length > 0 && (
                             <div className="mt-3 flex flex-wrap gap-2">
@@ -1049,7 +1060,7 @@ export default function JobsPage() {
                 Owner
                 <select value={jobForm.ownerUserId} onChange={(event) => setJobForm({ ...jobForm, ownerUserId: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2 font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500">
                   <option value="">{selectedJob ? "Keep current owner" : "Current user"}</option>
-                  {shouldShowSelectedOwnerFallback && <option value={selectedOwnerId}>Current owner #{selectedOwnerId}</option>}
+                  {shouldShowSelectedOwnerFallback && <option value={selectedOwnerId}>Current owner: {selectedOwnerLabel}</option>}
                   {ownerOptions.map((user) => (
                     <option key={String(user.id)} value={String(user.id)}>
                       {getUserLabel(user)}
