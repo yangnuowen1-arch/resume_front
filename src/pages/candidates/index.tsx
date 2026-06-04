@@ -403,8 +403,17 @@ export default function CandidatesPage() {
   };
 
   const currentCandidates = candidatesQuery.data?.items ?? [];
-  const selectedBatchCandidateIds = currentCandidates.filter((candidate) => selectedCandidateIds.has(String(candidate.id))).map((candidate) => candidate.id);
+  const selectedBatchCandidates = currentCandidates.filter((candidate) => selectedCandidateIds.has(String(candidate.id)));
+  const selectedBatchCandidateIds = selectedBatchCandidates.map((candidate) => candidate.id);
   const selectedBatchCount = selectedBatchCandidateIds.length;
+  const selectedBatchJobIds = Array.from(
+    new Set(
+      selectedBatchCandidates
+        .map((candidate) => getCandidateJobId(candidate))
+        .filter((jobId): jobId is ApiId => jobId !== undefined)
+        .map((jobId) => String(jobId)),
+    ),
+  );
   const categoryOptions = getCategoryOptions(jobCategoriesQuery.data?.items);
   const currentPositionOptions = getPositionOptions(jobsQuery.data?.items, form.currentJobId, form.currentPosition);
   const jobTitleById = new Map((jobsLookupQuery.data?.items ?? []).map((job) => [String(job.id), job.title]));
@@ -429,8 +438,19 @@ export default function CandidatesPage() {
       return;
     }
 
+    if (selectedBatchJobIds.length === 0) {
+      setBatchMessage("Select candidates with a current position.");
+      return;
+    }
+
+    if (selectedBatchJobIds.length > 1) {
+      setBatchMessage("Select candidates for the same current position.");
+      return;
+    }
+
     batchAnalyzeMutation.mutate({
       candidateIds: selectedBatchCandidateIds,
+      jobId: parseInt(selectedBatchJobIds[0]),
     });
   };
 

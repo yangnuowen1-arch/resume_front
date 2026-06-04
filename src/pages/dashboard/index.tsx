@@ -1,6 +1,53 @@
-import { Users, Clock, CheckCircle, XCircle, TrendingUp, Calendar } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import { Users, Clock, CheckCircle, XCircle, TrendingUp, Calendar, LoaderCircle } from "lucide-react";
+import { listScreeningTasks, type ScreeningTask } from "../../api";
+import { isRequestError } from "../../request";
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return isRequestError(error) ? error.message : fallback;
+}
+
+function getCandidateName(screening: ScreeningTask): string {
+  return screening.candidate ?? screening.candidateName ?? `Candidate #${screening.candidateId ?? "-"}`;
+}
+
+function getPosition(screening: ScreeningTask): string {
+  return screening.position ?? screening.jobTitle ?? `Job #${screening.jobId ?? "-"}`;
+}
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length > 1) {
+    return parts.slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  }
+  return name.trim().slice(0, 2).toUpperCase() || "?";
+}
+
+function formatTaskDate(value?: string): string {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
 
 export default function DashboardPage() {
+  const screeningTasksQuery = useQuery({
+    queryKey: ["screening-tasks", "recent"],
+    queryFn: () => listScreeningTasks({ page: 1, pageSize: 10 }),
+  });
+
   const stats = [
     { label: "Total Resumes", value: "1,247", change: "+12.5%", trend: "up", icon: Users, color: "blue" },
     { label: "Pending Screening", value: "38", change: "-5.2%", trend: "down", icon: Clock, color: "yellow" },
@@ -8,16 +55,28 @@ export default function DashboardPage() {
     { label: "Rejected", value: "892", change: "+8.1%", trend: "up", icon: XCircle, color: "red" },
   ] as const;
 
-  const recentScreenings = [
-    { id: 1, candidate: "Sarah Johnson", position: "Senior Frontend Developer", score: 92, status: "Recommended", date: "2026-05-09 10:30" },
-    { id: 2, candidate: "Michael Chen", position: "Product Manager", score: 88, status: "Recommended", date: "2026-05-09 09:15" },
-    { id: 3, candidate: "Emily Davis", position: "UX Designer", score: 75, status: "Review Required", date: "2026-05-09 08:45" },
-    { id: 4, candidate: "David Kim", position: "Backend Engineer", score: 45, status: "Rejected", date: "2026-05-08 16:20" },
-    { id: 5, candidate: "Lisa Anderson", position: "Data Scientist", score: 91, status: "Recommended", date: "2026-05-08 15:10" },
-  ];
+  const recentScreenings = screeningTasksQuery.data?.items ?? [];
+  const totalScreeningTasks = screeningTasksQuery.data?.total ?? 0;
 
-  const getScoreColor = (score: number) => (score >= 80 ? "text-green-600 bg-green-50" : score >= 60 ? "text-yellow-600 bg-yellow-50" : "text-red-600 bg-red-50");
-  const getStatusColor = (status: string) => (status === "Recommended" ? "text-green-700 bg-green-100" : status === "Review Required" ? "text-yellow-700 bg-yellow-100" : "text-red-700 bg-red-100");
+  const getScoreColor = (score: number | null | undefined) => {
+    if (score === null || score === undefined) {
+      return "text-gray-600 bg-gray-100";
+    }
+    return score >= 80 ? "text-green-600 bg-green-50" : score >= 60 ? "text-yellow-600 bg-yellow-50" : "text-red-600 bg-red-50";
+  };
+
+  const getStatusColor = (status: string) => {
+    if (status === "success") {
+      return "text-green-700 bg-green-100";
+    }
+    if (status === "pending") {
+      return "text-yellow-700 bg-yellow-100";
+    }
+    if (status === "failed") {
+      return "text-red-700 bg-red-100";
+    }
+    return "text-gray-700 bg-gray-100";
+  };
 
   return (
     <div className="p-4 md:p-6 lg:p-8">
@@ -51,39 +110,84 @@ export default function DashboardPage() {
       <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
         <div className="border-b border-gray-200 px-4 py-4 md:px-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-gray-900 md:text-lg">Recent Screening Tasks</h2>
-            <button className="text-xs font-medium text-blue-600 hover:text-blue-700 md:text-sm">View All</button>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900 md:text-lg">Recent Screening Tasks</h2>
+              <p className="mt-1 text-xs text-gray-500 md:text-sm">Total {totalScreeningTasks} tasks</p>
+            </div>
+            <Link to="/screening" className="text-xs font-medium text-blue-600 hover:text-blue-700 md:text-sm">View All</Link>
           </div>
         </div>
+        {screeningTasksQuery.isLoading && (
+          <div className="p-6 text-sm text-gray-600">
+            <div className="flex items-center gap-2">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              Loading recent screening tasks...
+            </div>
+          </div>
+        )}
+        {screeningTasksQuery.isError && (
+          <div className="p-4">
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {getErrorMessage(screeningTasksQuery.error, "Failed to load recent screening tasks.")}
+            </div>
+          </div>
+        )}
+        {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && recentScreenings.length === 0 && (
+          <div className="p-8 text-center text-sm text-gray-500">No screening tasks found.</div>
+        )}
         <div className="hidden overflow-x-auto md:block">
-          <table className="w-full">
-            <thead className="border-b border-gray-200 bg-gray-50">
-              <tr>
-                {["Candidate", "Position", "AI Score", "Status", "Date"].map((head) => (
-                  <th key={head} className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">{head}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200 bg-white">
-              {recentScreenings.map((screening) => (
-                <tr key={screening.id} className="transition-colors hover:bg-gray-50">
-                  <td className="whitespace-nowrap px-6 py-4">
-                    <div className="flex items-center">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-600">
-                        <span className="text-xs font-medium text-white">{screening.candidate.split(" ").map((n) => n[0]).join("")}</span>
-                      </div>
-                      <span className="ml-3 text-sm font-medium text-gray-900">{screening.candidate}</span>
-                    </div>
-                  </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{screening.position}</td>
-                  <td className="whitespace-nowrap px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(screening.score)}`}>{screening.score}%</span></td>
-                  <td className="whitespace-nowrap px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span></td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500"><div className="flex items-center gap-1"><Calendar className="h-4 w-4" />{screening.date}</div></td>
+          {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && recentScreenings.length > 0 && (
+            <table className="w-full">
+              <thead className="border-b border-gray-200 bg-gray-50">
+                <tr>
+                  {["Candidate", "Position", "AI Score", "Status", "Date"].map((head) => (
+                    <th key={head} className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">{head}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {recentScreenings.map((screening) => (
+                  <tr key={String(screening.id)} className="transition-colors hover:bg-gray-50">
+                    <td className="whitespace-nowrap px-6 py-4">
+                      <div className="flex items-center">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-600">
+                          <span className="text-xs font-medium text-white">{getInitials(getCandidateName(screening))}</span>
+                        </div>
+                        <span className="ml-3 text-sm font-medium text-gray-900">{getCandidateName(screening)}</span>
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{getPosition(screening)}</td>
+                    <td className="whitespace-nowrap px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(screening.aiScore)}`}>{screening.aiScore ?? "-"}{screening.aiScore !== null && screening.aiScore !== undefined ? "%" : ""}</span></td>
+                    <td className="whitespace-nowrap px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span></td>
+                    <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500"><div className="flex items-center gap-1"><Calendar className="h-4 w-4" />{formatTaskDate(screening.date ?? screening.createdAt)}</div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
+        {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && recentScreenings.length > 0 && (
+          <div className="divide-y divide-gray-200 md:hidden">
+            {recentScreenings.map((screening) => (
+              <div key={String(screening.id)} className="p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-gray-900">{getCandidateName(screening)}</p>
+                    <p className="mt-1 truncate text-sm text-gray-600">{getPosition(screening)}</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm text-gray-500">
+                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(screening.aiScore)}`}>{screening.aiScore ?? "-"}{screening.aiScore !== null && screening.aiScore !== undefined ? "%" : ""}</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Calendar className="h-4 w-4" />
+                    {formatTaskDate(screening.date ?? screening.createdAt)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
