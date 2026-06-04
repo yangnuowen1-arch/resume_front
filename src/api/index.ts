@@ -20,6 +20,8 @@ export { createJobCategory, listJobCategories, updateJobCategory } from "./job-c
 export type { CreateJobCategoryRequest, JobCategory, JobCategoryStatus, ListJobCategoriesParams, ListJobCategoriesResponse, UpdateJobCategoryRequest } from "./job-categories";
 export { bindJobTags, createJob, deleteJob, getJob, listJobs, updateJob } from "./jobs";
 export type { CreateJobRequest, Job, JobDynamicFields, JobDynamicFieldValue, JobMutationResponse, JobStatus, ListJobsParams, ListJobsResponse, UpdateJobRequest } from "./jobs";
+export { listOperationLogs } from "./operation-logs";
+export type { ListOperationLogsParams, ListOperationLogsResponse, OperationLog } from "./operation-logs";
 export { createTagGroup, listGroupedTags, listTagGroups, updateTagGroup } from "./tag-groups";
 export type { CreateTagGroupRequest, GroupedTagGroup, ListTagGroupsParams, ListTagGroupsResponse, TagGroup, TagGroupStatus, UpdateTagGroupRequest } from "./tag-groups";
 export { createTag, listTags, updateTag } from "./tags";
