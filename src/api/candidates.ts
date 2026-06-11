@@ -39,6 +39,8 @@ export interface Candidate {
   resumeLanguage?: string;
   resumeUploadedAt?: string;
   resumeEvaluated?: boolean;
+  resumeParseStatus?: string;
+  resumeParseError?: string;
   screeningStatus?: string;
   aiScore?: number | null;
   applicationId?: ApiId;
@@ -93,6 +95,8 @@ export interface CreateCandidateRequest {
 export interface CreateCandidateResponse {
   id: ApiId;
   resumeId?: ApiId;
+  resumeParseStatus?: string;
+  resumeParseError?: string;
 }
 
 export interface UpdateCandidateRequest {
@@ -119,6 +123,8 @@ export interface UpdateCandidateRequest {
 export interface UpdateCandidateResponse {
   id: ApiId;
   resumeId?: ApiId;
+  resumeParseStatus?: string;
+  resumeParseError?: string;
 }
 
 export interface BatchAnalyzeCandidatesRequest {
@@ -131,6 +137,7 @@ export interface BatchAnalyzeCandidateItem {
   resumeId?: ApiId;
   applicationId?: ApiId;
   status: string;
+  parseStatus?: string;
 }
 
 export interface BatchAnalyzeCandidatesResponse {

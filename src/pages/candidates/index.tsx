@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Edit3, FileText, LoaderCircle, Plus, Save, Search, Sparkles, X } from "lucide-react";
+import { Edit3, Eye, FileText, LoaderCircle, Plus, RefreshCw, Save, Search, Sparkles, X } from "lucide-react";
 import {
   CANDIDATE_STATUS_OPTIONS,
   batchAnalyzeCandidates,
@@ -10,10 +10,13 @@ import {
   listJobs,
   updateCandidate,
   type ApiId,
+  type BatchAnalyzeCandidatesResponse,
   type Candidate,
+  type CreateCandidateResponse,
   type JobCategory,
   type Job,
   type UpdateCandidateRequest,
+  type UpdateCandidateResponse,
 } from "../../api";
 import { isRequestError, queryClient } from "../../request";
 
@@ -194,6 +197,115 @@ function getCandidateStatusLabel(status: string | undefined): string {
   return CANDIDATE_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
 }
 
+type KnownResumeParseStatus = "pending" | "parsing" | "parsed" | "failed";
+type CandidateResumeParseState = "none" | KnownResumeParseStatus;
+
+function normalizeResumeParseStatus(status: string | undefined): KnownResumeParseStatus | undefined {
+  const normalized = status?.trim().toLowerCase();
+  if (normalized === "pending" || normalized === "parsing" || normalized === "parsed" || normalized === "failed") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function getCandidateResumeParseState(candidate: Candidate): CandidateResumeParseState {
+  if (!candidate.resumeId) {
+    return "none";
+  }
+  return normalizeResumeParseStatus(candidate.resumeParseStatus) ?? "pending";
+}
+
+function getResumeParseStatusLabel(state: CandidateResumeParseState): string {
+  if (state === "none") {
+    return "无简历";
+  }
+  if (state === "pending") {
+    return "待解析";
+  }
+  if (state === "parsing") {
+    return "解析中";
+  }
+  if (state === "parsed") {
+    return "已解析";
+  }
+  return "解析失败";
+}
+
+function getResumeParseStatusStyle(state: CandidateResumeParseState): string {
+  if (state === "none") {
+    return "bg-gray-50 text-gray-600 ring-gray-200";
+  }
+  if (state === "parsed") {
+    return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  }
+  if (state === "parsing") {
+    return "bg-sky-50 text-sky-700 ring-sky-200";
+  }
+  if (state === "failed") {
+    return "bg-rose-50 text-rose-700 ring-rose-200";
+  }
+  return "bg-amber-50 text-amber-700 ring-amber-200";
+}
+
+function getResumeParseActionLabel(state: CandidateResumeParseState): string | null {
+  if (state === "pending") {
+    return "解析简历";
+  }
+  if (state === "failed") {
+    return "重新解析";
+  }
+  if (state === "parsing") {
+    return "刷新进度";
+  }
+  if (state === "parsed") {
+    return "查看解析结果";
+  }
+  return null;
+}
+
+function formatCandidateNameList(candidates: Candidate[]): string {
+  const names = candidates.map((candidate) => candidate.name.trim()).filter(Boolean);
+  const visibleNames = names.slice(0, 3).join("、");
+  if (!visibleNames) {
+    return `${candidates.length} 位候选人`;
+  }
+  return candidates.length > 3 ? `${visibleNames} 等 ${candidates.length} 位候选人` : visibleNames;
+}
+
+function getResumeUploadMessage(payload: Pick<UpdateCandidateRequest, "file" | "rawText">, result: CreateCandidateResponse | UpdateCandidateResponse): string | null {
+  if (!payload.file) {
+    return null;
+  }
+
+  const status = normalizeResumeParseStatus(result.resumeParseStatus) ?? (payload.rawText ? "parsed" : "pending");
+  if (status === "parsed") {
+    return "上传成功，简历已解析。";
+  }
+  if (status === "parsing") {
+    return "上传成功，简历解析中。";
+  }
+  if (status === "failed") {
+    return result.resumeParseError ? `上传成功，简历解析失败：${result.resumeParseError}` : "上传成功，简历解析失败，请重新上传或重新解析。";
+  }
+  return "上传成功，等待解析。";
+}
+
+function getBatchAnalyzeMessage(result: BatchAnalyzeCandidatesResponse): string {
+  const waitingParseCount = result.items.filter((item) => {
+    const status = normalizeResumeParseStatus(item.parseStatus);
+    return status === "pending" || status === "parsing";
+  }).length;
+  const failedParseCount = result.items.filter((item) => normalizeResumeParseStatus(item.parseStatus) === "failed").length;
+  const parts = [`已提交 ${result.queued}/${result.total}，失败 ${result.failed}。`];
+  if (waitingParseCount > 0) {
+    parts.push(`${waitingParseCount} 份简历会等待解析完成后再分析。`);
+  }
+  if (failedParseCount > 0) {
+    parts.push(`${failedParseCount} 份简历解析失败。`);
+  }
+  return parts.join(" ");
+}
+
 function getSelectOptionLabel(options: SelectOption[], value: string | undefined): string {
   if (!value) {
     return "-";
@@ -270,8 +382,12 @@ export default function CandidatesPage() {
 
   const createCandidateMutation = useMutation({
     mutationFn: createCandidate,
-    onSuccess: () => {
+    onSuccess: (result, payload) => {
+      const uploadMessage = getResumeUploadMessage(payload, result);
       closeModal();
+      if (uploadMessage) {
+        setBatchMessage(uploadMessage);
+      }
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
     },
     onError: (error) => setFormError(getErrorMessage(error, "Failed to create candidate.")),
@@ -279,8 +395,12 @@ export default function CandidatesPage() {
 
   const updateCandidateMutation = useMutation({
     mutationFn: ({ id, payload }: { id: ApiId; payload: UpdateCandidateRequest }) => updateCandidate(id, payload),
-    onSuccess: () => {
+    onSuccess: (result, variables) => {
+      const uploadMessage = getResumeUploadMessage(variables.payload, result);
       closeModal();
+      if (uploadMessage) {
+        setBatchMessage(uploadMessage);
+      }
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
     },
     onError: (error) => setFormError(getErrorMessage(error, "Failed to update candidate.")),
@@ -289,7 +409,7 @@ export default function CandidatesPage() {
   const batchAnalyzeMutation = useMutation({
     mutationFn: batchAnalyzeCandidates,
     onSuccess: (result) => {
-      setBatchMessage(`Queued ${result.queued}/${result.total}; failed ${result.failed}.`);
+      setBatchMessage(getBatchAnalyzeMessage(result));
       setSelectedCandidateIds(new Set());
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
     },
@@ -438,6 +558,22 @@ export default function CandidatesPage() {
       return;
     }
 
+    const candidatesWithoutResume = selectedBatchCandidates.filter((candidate) => !candidate.resumeId);
+    if (candidatesWithoutResume.length > 0) {
+      setBatchMessage(
+        candidatesWithoutResume.length === 1
+          ? `${formatCandidateNameList(candidatesWithoutResume)}：该候选人未上传简历。`
+          : `以下候选人未上传简历：${formatCandidateNameList(candidatesWithoutResume)}。`,
+      );
+      return;
+    }
+
+    const candidatesWithFailedParse = selectedBatchCandidates.filter((candidate) => getCandidateResumeParseState(candidate) === "failed");
+    if (candidatesWithFailedParse.length > 0) {
+      setBatchMessage(`简历解析失败，请重新上传或重新解析：${formatCandidateNameList(candidatesWithFailedParse)}。`);
+      return;
+    }
+
     if (selectedBatchJobIds.length === 0) {
       setBatchMessage("Select candidates with a current position.");
       return;
@@ -448,10 +584,36 @@ export default function CandidatesPage() {
       return;
     }
 
+    const candidatesWaitingForParse = selectedBatchCandidates.filter((candidate) => {
+      const parseState = getCandidateResumeParseState(candidate);
+      return parseState === "pending" || parseState === "parsing";
+    });
+    if (candidatesWaitingForParse.length > 0) {
+      setBatchMessage("简历尚未完成解析，提交后会等待解析完成再分析。");
+    }
+
     batchAnalyzeMutation.mutate({
       candidateIds: selectedBatchCandidateIds,
       jobId: parseInt(selectedBatchJobIds[0]),
     });
+  };
+
+  const handleResumeParseAction = (candidate: Candidate) => {
+    const parseState = getCandidateResumeParseState(candidate);
+    if (parseState === "parsing") {
+      void queryClient.invalidateQueries({ queryKey: ["candidates"] });
+      setBatchMessage("已刷新简历解析状态。");
+      return;
+    }
+
+    if (parseState === "parsed") {
+      setBatchMessage("解析结果接口尚未接入，后端提供 GET /api/v1/resumes/:id/parse-result 后即可查看。");
+      return;
+    }
+
+    if (parseState === "pending" || parseState === "failed") {
+      setBatchMessage("解析接口尚未接入，后端提供 POST /api/v1/resumes/:id/parse 后即可启用。");
+    }
   };
 
   return (
@@ -521,6 +683,7 @@ export default function CandidatesPage() {
           <div className="divide-y divide-gray-200">
             {(candidatesQuery.data?.items ?? []).map((candidate) => {
               const positionLabel = getCandidatePosition(candidate, jobTitleById);
+              const resumeParseState = getCandidateResumeParseState(candidate);
 
               return (
                 <div key={String(candidate.id)} className="p-4 transition-colors hover:bg-gray-50">
@@ -551,13 +714,21 @@ export default function CandidatesPage() {
                           <span>AI Score: {formatScore(candidate.aiScore)}</span>
                           <span>Screening: {candidate.screeningStatus || "-"}</span>
                           <span>Resume: {candidate.resumeFilename || (candidate.resumeId ? `#${String(candidate.resumeId)}` : "-")}</span>
+                          <span className="flex min-w-0 items-center gap-1">
+                            <span>简历解析:</span>
+                            <ResumeParseBadge candidate={candidate} />
+                          </span>
                         </div>
-                        {candidate.resumeFileUrl && (
-                          <a href={candidate.resumeFileUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:text-blue-800">
-                            <FileText className="h-4 w-4" />
-                            {candidate.resumeFilename || "Open resume"}
-                          </a>
-                        )}
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          {candidate.resumeFileUrl && (
+                            <a href={candidate.resumeFileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:text-blue-800">
+                              <FileText className="h-4 w-4" />
+                              {candidate.resumeFilename || "Open resume"}
+                            </a>
+                          )}
+                          <ResumeParseActionButton candidate={candidate} parseState={resumeParseState} onClick={handleResumeParseAction} />
+                        </div>
+                        {resumeParseState === "failed" && candidate.resumeParseError && <p className="mt-1 text-xs text-rose-600">解析错误：{candidate.resumeParseError}</p>}
                         <p className="mt-2 text-sm text-gray-600">
                           {[candidate.currentPosition, candidate.currentCompany].filter(Boolean).join(" · ") || [candidate.school, candidate.major].filter(Boolean).join(" · ") || "No career or education info."}
                         </p>
@@ -688,6 +859,47 @@ function EmptyState({ label }: { label: string }) {
 
 function StatusBadge({ value }: { value: string }) {
   return <span className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${getStatusStyle(value)}`}>{getCandidateStatusLabel(value)}</span>;
+}
+
+function ResumeParseBadge({ candidate }: { candidate: Candidate }) {
+  const state = getCandidateResumeParseState(candidate);
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${getResumeParseStatusStyle(state)}`} title={state === "failed" ? candidate.resumeParseError : undefined}>
+      {getResumeParseStatusLabel(state)}
+    </span>
+  );
+}
+
+function ResumeParseActionButton({
+  candidate,
+  parseState,
+  onClick,
+}: {
+  candidate: Candidate;
+  parseState: CandidateResumeParseState;
+  onClick: (candidate: Candidate) => void;
+}) {
+  const label = getResumeParseActionLabel(parseState);
+  if (!label) {
+    return null;
+  }
+
+  return (
+    <button type="button" onClick={() => onClick(candidate)} className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100">
+      <ResumeParseActionIcon state={parseState} />
+      {label}
+    </button>
+  );
+}
+
+function ResumeParseActionIcon({ state }: { state: CandidateResumeParseState }) {
+  if (state === "parsed") {
+    return <Eye className="h-3.5 w-3.5" />;
+  }
+  if (state === "parsing" || state === "failed") {
+    return <RefreshCw className="h-3.5 w-3.5" />;
+  }
+  return <Sparkles className="h-3.5 w-3.5" />;
 }
 
 function Field({ label, value, onChange, type = "text", required }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {

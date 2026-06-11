@@ -22,6 +22,7 @@ export { bindJobTags, createJob, deleteJob, getJob, listJobs, updateJob } from "
 export type { CreateJobRequest, Job, JobDynamicFields, JobDynamicFieldValue, JobMutationResponse, JobStatus, ListJobsParams, ListJobsResponse, UpdateJobRequest } from "./jobs";
 export { listOperationLogs } from "./operation-logs";
 export type { ListOperationLogsParams, ListOperationLogsResponse, OperationLog } from "./operation-logs";
+export type { Resume, ResumeParseStatus } from "./resumes";
 export { listScreeningTasks } from "./screening-tasks";
 export type { ListScreeningTasksParams, ListScreeningTasksResponse, ScreeningTask, ScreeningTaskStatus } from "./screening-tasks";
 export { createTagGroup, listGroupedTags, listTagGroups, updateTagGroup } from "./tag-groups";
