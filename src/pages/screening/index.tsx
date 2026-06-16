@@ -1,21 +1,37 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Calendar, ChevronLeft, ChevronRight, LoaderCircle } from "lucide-react";
-import { listScreeningTasks, type ScreeningTask } from "../../api";
-import { isRequestError } from "../../request";
+import { useState, type FormEvent } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Calendar, ChevronLeft, ChevronRight, LoaderCircle, PlayCircle, Sparkles } from "lucide-react";
+import { listJobs, listScreeningTasks, runScreeningTask, type RunScreeningTaskResponse, type ScreeningTask } from "../../api";
+import { isRequestError, queryClient } from "../../request";
 
 const PAGE_SIZE = 20;
+
+const OUTPUT_LANGUAGE_OPTIONS = [
+  { value: "Chinese", label: "Chinese" },
+  { value: "English", label: "English" },
+];
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return isRequestError(error) ? error.message : fallback;
 }
 
 function getCandidateName(screening: ScreeningTask): string {
-  return screening.candidate ?? screening.candidateName ?? `Candidate #${screening.candidateId ?? "-"}`;
+  if (screening.candidate || screening.candidateName) {
+    return screening.candidate ?? screening.candidateName ?? "";
+  }
+  return screening.resumeId !== undefined ? `Resume #${screening.resumeId}` : `Candidate #${screening.candidateId ?? "-"}`;
 }
 
 function getPosition(screening: ScreeningTask): string {
   return screening.position ?? screening.jobTitle ?? `Job #${screening.jobId ?? "-"}`;
+}
+
+function getTaskScore(screening: ScreeningTask): number | null | undefined {
+  return screening.aiScore ?? screening.score;
+}
+
+function getTaskKey(screening: ScreeningTask): string {
+  return String(screening.id ?? screening.screeningResultId ?? `${screening.resumeId ?? "-"}-${screening.jobId ?? "-"}-${screening.createdAt ?? ""}`);
 }
 
 function getInitials(name: string): string {
@@ -68,25 +84,177 @@ function formatScore(score: number | null | undefined): string {
   return score === null || score === undefined ? "-" : `${score}%`;
 }
 
+function formatResultLabel(value: string | undefined): string {
+  return value ? value.replaceAll("_", " ") : "-";
+}
+
 export default function ScreeningPage() {
   const [page, setPage] = useState(1);
+  const [resumeIdInput, setResumeIdInput] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [outputLanguage, setOutputLanguage] = useState("Chinese");
+  const [runFormError, setRunFormError] = useState<string | null>(null);
+  const [latestResult, setLatestResult] = useState<RunScreeningTaskResponse | null>(null);
+
+  const jobsQuery = useQuery({
+    queryKey: ["jobs", "screening-run-options"],
+    queryFn: () => listJobs({ page: 1, pageSize: 200 }),
+  });
 
   const screeningTasksQuery = useQuery({
     queryKey: ["screening-tasks", { page, pageSize: PAGE_SIZE }],
     queryFn: () => listScreeningTasks({ page, pageSize: PAGE_SIZE }),
   });
 
+  const runScreeningMutation = useMutation({
+    mutationFn: runScreeningTask,
+    onSuccess: (result) => {
+      setRunFormError(null);
+      setLatestResult(result);
+      setPage(1);
+      void queryClient.invalidateQueries({ queryKey: ["screening-tasks"] });
+    },
+    onError: (error) => {
+      setLatestResult(null);
+      setRunFormError(getErrorMessage(error, "Failed to run AI screening."));
+    },
+  });
+
+  const jobs = jobsQuery.data?.items ?? [];
   const screeningTasks = screeningTasksQuery.data?.items ?? [];
   const total = screeningTasksQuery.data?.total ?? 0;
   const currentPage = screeningTasksQuery.data?.page ?? page;
   const totalPages = screeningTasksQuery.data?.totalPages ?? Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  const submitRunScreening = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setRunFormError(null);
+
+    const resumeId = Number(resumeIdInput);
+    const selectedJobId = Number(jobId);
+
+    if (!Number.isInteger(resumeId) || resumeId <= 0) {
+      setRunFormError("Enter a valid resume ID.");
+      return;
+    }
+
+    if (!Number.isInteger(selectedJobId) || selectedJobId <= 0) {
+      setRunFormError("Select a job before running screening.");
+      return;
+    }
+
+    runScreeningMutation.mutate({
+      resumeId,
+      jobId: selectedJobId,
+      outputLanguage,
+    });
+  };
+
   return (
     <div className="p-4 md:p-6 lg:p-8">
       <div className="mb-6 md:mb-8">
         <h1 className="mb-2 text-xl font-semibold text-gray-900 md:text-2xl">Screening Tasks</h1>
-        <p className="text-sm text-gray-600 md:text-base">Review AI screening task results by candidate and position.</p>
+        <p className="text-sm text-gray-600 md:text-base">Run AI resume screening and review task results.</p>
       </div>
+
+      <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm md:p-6">
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900 md:text-lg">Run AI Screening</h2>
+            <p className="mt-1 text-xs text-gray-500 md:text-sm">Submit a parsed resume against a job.</p>
+          </div>
+          <Sparkles className="hidden h-5 w-5 text-blue-600 sm:block" />
+        </div>
+
+        <form onSubmit={submitRunScreening} className="grid gap-3 lg:grid-cols-[minmax(150px,180px)_minmax(0,1fr)_180px_auto]">
+          <label className="space-y-1 text-sm font-medium text-gray-700">
+            Resume ID
+            <input
+              type="number"
+              min="1"
+              value={resumeIdInput}
+              onChange={(event) => setResumeIdInput(event.target.value)}
+              placeholder="1"
+              className="h-10 w-full rounded-lg border border-gray-300 px-3 text-sm font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500"
+            />
+          </label>
+
+          <label className="space-y-1 text-sm font-medium text-gray-700">
+            Job
+            <select
+              value={jobId}
+              onChange={(event) => setJobId(event.target.value)}
+              disabled={jobsQuery.isLoading}
+              className="h-10 w-full rounded-lg border border-gray-300 px-3 text-sm font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+            >
+              <option value="">{jobsQuery.isLoading ? "Loading jobs..." : "Select a job"}</option>
+              {jobs.map((job) => (
+                <option key={String(job.id)} value={String(job.id)}>
+                  {job.title}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="space-y-1 text-sm font-medium text-gray-700">
+            Output Language
+            <select
+              value={outputLanguage}
+              onChange={(event) => setOutputLanguage(event.target.value)}
+              className="h-10 w-full rounded-lg border border-gray-300 px-3 text-sm font-normal focus:border-transparent focus:ring-2 focus:ring-blue-500"
+            >
+              {OUTPUT_LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            type="submit"
+            disabled={runScreeningMutation.isPending || jobsQuery.isLoading}
+            className="inline-flex h-10 items-center justify-center gap-2 self-end rounded-lg bg-gray-900 px-4 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {runScreeningMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+            Run
+          </button>
+        </form>
+
+        {jobsQuery.isError && (
+          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {getErrorMessage(jobsQuery.error, "Failed to load jobs.")}
+          </div>
+        )}
+
+        {runFormError && (
+          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {runFormError}
+          </div>
+        )}
+
+        {latestResult && (
+          <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getScoreColor(latestResult.score)}`}>{formatScore(latestResult.score)}</span>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(latestResult.status)}`}>{latestResult.status}</span>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-green-700 ring-1 ring-green-200">
+                    {formatResultLabel(latestResult.recommendation)}
+                  </span>
+                </div>
+                <p className="text-sm font-medium text-gray-900">Screening result #{latestResult.screeningResultId}</p>
+                <p className="mt-1 text-sm text-gray-700">{latestResult.summary || "Screening completed."}</p>
+              </div>
+              <div className="shrink-0 text-sm text-gray-600">
+                <p>Application #{latestResult.applicationId}</p>
+                <p>Match: {formatResultLabel(latestResult.matchLevel)}</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
 
       <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
         <div className="border-b border-gray-200 px-4 py-4 md:px-6">
@@ -109,37 +277,46 @@ export default function ScreeningPage() {
             <table className="w-full">
               <thead className="border-b border-gray-200 bg-gray-50">
                 <tr>
-                  {["Candidate", "Position", "AI Score", "Status", "Date"].map((head) => (
+                  {["Candidate", "Position", "AI Score", "Match", "Recommendation", "Status", "Error", "Date"].map((head) => (
                     <th key={head} className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">{head}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {screeningTasks.map((screening) => (
-                  <tr key={String(screening.id)} className="transition-colors hover:bg-gray-50">
-                    <td className="whitespace-nowrap px-6 py-4">
-                      <div className="flex items-center">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-600">
-                          <span className="text-xs font-medium text-white">{getInitials(getCandidateName(screening))}</span>
+                {screeningTasks.map((screening) => {
+                  const score = getTaskScore(screening);
+
+                  return (
+                    <tr key={getTaskKey(screening)} className="transition-colors hover:bg-gray-50">
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <div className="flex items-center">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-600">
+                            <span className="text-xs font-medium text-white">{getInitials(getCandidateName(screening))}</span>
+                          </div>
+                          <span className="ml-3 text-sm font-medium text-gray-900">{getCandidateName(screening)}</span>
                         </div>
-                        <span className="ml-3 text-sm font-medium text-gray-900">{getCandidateName(screening)}</span>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{getPosition(screening)}</td>
-                    <td className="whitespace-nowrap px-6 py-4">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(screening.aiScore)}`}>{formatScore(screening.aiScore)}</span>
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                      <div className="flex items-center gap-1">
-                        <Calendar className="h-4 w-4" />
-                        {formatTaskDate(screening.date ?? screening.createdAt)}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{getPosition(screening)}</td>
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(score)}`}>{formatScore(score)}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{formatResultLabel(screening.matchLevel)}</td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{formatResultLabel(screening.recommendation)}</td>
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
+                      </td>
+                      <td className="max-w-64 px-6 py-4 text-sm text-red-600">
+                        <span className="block truncate" title={screening.errorMessage ?? undefined}>{screening.errorMessage || "-"}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
+                        <div className="flex items-center gap-1">
+                          <Calendar className="h-4 w-4" />
+                          {formatTaskDate(screening.date ?? screening.createdAt)}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -147,24 +324,33 @@ export default function ScreeningPage() {
 
         {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && screeningTasks.length > 0 && (
           <div className="divide-y divide-gray-200 md:hidden">
-            {screeningTasks.map((screening) => (
-              <div key={String(screening.id)} className="p-4">
-                <div className="mb-3 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-gray-900">{getCandidateName(screening)}</p>
-                    <p className="mt-1 truncate text-sm text-gray-600">{getPosition(screening)}</p>
+            {screeningTasks.map((screening) => {
+              const score = getTaskScore(screening);
+
+              return (
+                <div key={getTaskKey(screening)} className="p-4">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-gray-900">{getCandidateName(screening)}</p>
+                      <p className="mt-1 truncate text-sm text-gray-600">{getPosition(screening)}</p>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
                   </div>
-                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
+                  <div className="flex items-center justify-between text-sm text-gray-500">
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(score)}`}>{formatScore(score)}</span>
+                    <span className="inline-flex items-center gap-1">
+                      <Calendar className="h-4 w-4" />
+                      {formatTaskDate(screening.date ?? screening.createdAt)}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-1 text-xs text-gray-600">
+                    <span>Match: {formatResultLabel(screening.matchLevel)}</span>
+                    <span>Recommendation: {formatResultLabel(screening.recommendation)}</span>
+                    {screening.errorMessage && <span className="text-red-600">Error: {screening.errorMessage}</span>}
+                  </div>
                 </div>
-                <div className="flex items-center justify-between text-sm text-gray-500">
-                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(screening.aiScore)}`}>{formatScore(screening.aiScore)}</span>
-                  <span className="inline-flex items-center gap-1">
-                    <Calendar className="h-4 w-4" />
-                    {formatTaskDate(screening.date ?? screening.createdAt)}
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

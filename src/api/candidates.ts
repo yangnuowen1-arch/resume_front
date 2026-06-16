@@ -127,26 +127,6 @@ export interface UpdateCandidateResponse {
   resumeParseError?: string;
 }
 
-export interface BatchAnalyzeCandidatesRequest {
-  candidateIds: ApiId[];
-  jobId?: ApiId;
-}
-
-export interface BatchAnalyzeCandidateItem {
-  candidateId: ApiId;
-  resumeId?: ApiId;
-  applicationId?: ApiId;
-  status: string;
-  parseStatus?: string;
-}
-
-export interface BatchAnalyzeCandidatesResponse {
-  total: number;
-  queued: number;
-  failed: number;
-  items: BatchAnalyzeCandidateItem[];
-}
-
 export function listCandidates(params: ListCandidatesParams = {}): Promise<ListCandidatesResponse> {
   const page = params.page ?? 1;
   const pageSize = params.pageSize ?? 20;
@@ -214,8 +194,4 @@ export function updateCandidate(id: ApiId, payload: UpdateCandidateRequest): Pro
   if (payload.language) formData.append("language", payload.language);
 
   return request.put<UpdateCandidateResponse, FormData>(`/candidates/${id}`, formData);
-}
-
-export function batchAnalyzeCandidates(payload: BatchAnalyzeCandidatesRequest): Promise<BatchAnalyzeCandidatesResponse> {
-  return request.post<BatchAnalyzeCandidatesResponse, BatchAnalyzeCandidatesRequest>("/candidates/batch-analyze", payload);
 }

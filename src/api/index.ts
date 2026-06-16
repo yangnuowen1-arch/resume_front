@@ -2,11 +2,8 @@ export { login, register } from "./auth";
 export type { LoginResponse } from "./auth";
 export { createApplication, listApplications } from "./applications";
 export type { Application, ApplicationStatus, CreateApplicationRequest, ListApplicationsParams, ListApplicationsResponse } from "./applications";
-export { CANDIDATE_STATUS_OPTIONS, batchAnalyzeCandidates, createCandidate, listCandidates, updateCandidate } from "./candidates";
+export { CANDIDATE_STATUS_OPTIONS, createCandidate, listCandidates, updateCandidate } from "./candidates";
 export type {
-  BatchAnalyzeCandidateItem,
-  BatchAnalyzeCandidatesRequest,
-  BatchAnalyzeCandidatesResponse,
   Candidate,
   CandidateStatus,
   CreateCandidateRequest,
@@ -23,8 +20,15 @@ export type { CreateJobRequest, Job, JobDynamicFields, JobDynamicFieldValue, Job
 export { listOperationLogs } from "./operation-logs";
 export type { ListOperationLogsParams, ListOperationLogsResponse, OperationLog } from "./operation-logs";
 export type { Resume, ResumeParseStatus } from "./resumes";
-export { listScreeningTasks } from "./screening-tasks";
-export type { ListScreeningTasksParams, ListScreeningTasksResponse, ScreeningTask, ScreeningTaskStatus } from "./screening-tasks";
+export { listScreeningTasks, runScreeningTask } from "./screening-tasks";
+export type {
+  ListScreeningTasksParams,
+  ListScreeningTasksResponse,
+  RunScreeningTaskRequest,
+  RunScreeningTaskResponse,
+  ScreeningTask,
+  ScreeningTaskStatus,
+} from "./screening-tasks";
 export { createTagGroup, listGroupedTags, listTagGroups, updateTagGroup } from "./tag-groups";
 export type { CreateTagGroupRequest, GroupedTagGroup, ListTagGroupsParams, ListTagGroupsResponse, TagGroup, TagGroupStatus, UpdateTagGroupRequest } from "./tag-groups";
 export { createTag, listTags, updateTag } from "./tags";

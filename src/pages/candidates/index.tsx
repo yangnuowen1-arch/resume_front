@@ -1,20 +1,20 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Edit3, Eye, FileText, LoaderCircle, Plus, RefreshCw, Save, Search, Sparkles, X } from "lucide-react";
+import { Edit3, FileText, LoaderCircle, Plus, Save, Search, Sparkles, X } from "lucide-react";
 import {
   CANDIDATE_STATUS_OPTIONS,
-  batchAnalyzeCandidates,
   createCandidate,
   listCandidates,
   listJobCategories,
   listJobs,
+  runScreeningTask,
   updateCandidate,
   type ApiId,
-  type BatchAnalyzeCandidatesResponse,
   type Candidate,
   type CreateCandidateResponse,
   type JobCategory,
   type Job,
+  type RunScreeningTaskResponse,
   type UpdateCandidateRequest,
   type UpdateCandidateResponse,
 } from "../../api";
@@ -65,6 +65,18 @@ const defaultForm: CandidateFormState = {
 interface SelectOption {
   value: string;
   label: string;
+}
+
+interface RunCandidateScreeningPayload {
+  candidates: Candidate[];
+  jobId: ApiId;
+  outputLanguage: string;
+}
+
+interface CandidateScreeningRunResult {
+  candidate: Candidate;
+  result?: RunScreeningTaskResponse;
+  error?: unknown;
 }
 
 const GENDER_OPTIONS: SelectOption[] = [
@@ -247,22 +259,6 @@ function getResumeParseStatusStyle(state: CandidateResumeParseState): string {
   return "bg-amber-50 text-amber-700 ring-amber-200";
 }
 
-function getResumeParseActionLabel(state: CandidateResumeParseState): string | null {
-  if (state === "pending") {
-    return "解析简历";
-  }
-  if (state === "failed") {
-    return "重新解析";
-  }
-  if (state === "parsing") {
-    return "刷新进度";
-  }
-  if (state === "parsed") {
-    return "查看解析结果";
-  }
-  return null;
-}
-
 function formatCandidateNameList(candidates: Candidate[]): string {
   const names = candidates.map((candidate) => candidate.name.trim()).filter(Boolean);
   const visibleNames = names.slice(0, 3).join("、");
@@ -290,20 +286,54 @@ function getResumeUploadMessage(payload: Pick<UpdateCandidateRequest, "file" | "
   return "上传成功，等待解析。";
 }
 
-function getBatchAnalyzeMessage(result: BatchAnalyzeCandidatesResponse): string {
-  const waitingParseCount = result.items.filter((item) => {
-    const status = normalizeResumeParseStatus(item.parseStatus);
-    return status === "pending" || status === "parsing";
-  }).length;
-  const failedParseCount = result.items.filter((item) => normalizeResumeParseStatus(item.parseStatus) === "failed").length;
-  const parts = [`已提交 ${result.queued}/${result.total}，失败 ${result.failed}。`];
-  if (waitingParseCount > 0) {
-    parts.push(`${waitingParseCount} 份简历会等待解析完成后再分析。`);
+function isSuccessfulScreeningRun(item: CandidateScreeningRunResult): boolean {
+  return item.result?.status === "success";
+}
+
+function getScreeningRunMessage(results: CandidateScreeningRunResult[]): string {
+  const succeeded = results.filter(isSuccessfulScreeningRun);
+  const failed = results.filter((item) => !isSuccessfulScreeningRun(item));
+  const parts = [`AI 筛选完成：成功 ${succeeded.length}/${results.length}，失败 ${failed.length}。`];
+
+  if (succeeded.length > 0) {
+    const scoreSummary = succeeded
+      .slice(0, 3)
+      .map((item) => `${item.candidate.name} ${item.result?.score ?? "-"}分`)
+      .join("、");
+    parts.push(`分数：${scoreSummary}${succeeded.length > 3 ? " 等" : ""}。`);
   }
-  if (failedParseCount > 0) {
-    parts.push(`${failedParseCount} 份简历解析失败。`);
+
+  if (failed.length > 0) {
+    const failedSummary = failed
+      .slice(0, 3)
+      .map((item) => item.candidate.name)
+      .join("、");
+    parts.push(`失败：${failedSummary}${failed.length > 3 ? " 等" : ""}。`);
   }
+
+  parts.push("筛选任务列表已刷新，可查看 status、aiScore、matchLevel、recommendation 和 errorMessage。");
   return parts.join(" ");
+}
+
+async function runCandidateScreening(payload: RunCandidateScreeningPayload): Promise<CandidateScreeningRunResult[]> {
+  return Promise.all(
+    payload.candidates.map(async (candidate) => {
+      if (!candidate.resumeId) {
+        return { candidate, error: new Error("Missing resume ID") };
+      }
+
+      try {
+        const result = await runScreeningTask({
+          resumeId: candidate.resumeId,
+          jobId: payload.jobId,
+          outputLanguage: payload.outputLanguage,
+        });
+        return { candidate, result };
+      } catch (error) {
+        return { candidate, error };
+      }
+    }),
+  );
 }
 
 function getSelectOptionLabel(options: SelectOption[], value: string | undefined): string {
@@ -407,11 +437,12 @@ export default function CandidatesPage() {
   });
 
   const batchAnalyzeMutation = useMutation({
-    mutationFn: batchAnalyzeCandidates,
-    onSuccess: (result) => {
-      setBatchMessage(getBatchAnalyzeMessage(result));
-      setSelectedCandidateIds(new Set());
-      queryClient.invalidateQueries({ queryKey: ["candidates"] });
+    mutationFn: runCandidateScreening,
+    onSuccess: (results) => {
+      setBatchMessage(getScreeningRunMessage(results));
+      setSelectedCandidateIds(new Set(results.filter((item) => !isSuccessfulScreeningRun(item)).map((item) => String(item.candidate.id))));
+      void queryClient.invalidateQueries({ queryKey: ["candidates"] });
+      void queryClient.invalidateQueries({ queryKey: ["screening-tasks"] });
     },
     onError: (error) => setBatchMessage(getErrorMessage(error, "Failed to analyze selected candidates.")),
   });
@@ -584,36 +615,17 @@ export default function CandidatesPage() {
       return;
     }
 
-    const candidatesWaitingForParse = selectedBatchCandidates.filter((candidate) => {
-      const parseState = getCandidateResumeParseState(candidate);
-      return parseState === "pending" || parseState === "parsing";
-    });
-    if (candidatesWaitingForParse.length > 0) {
-      setBatchMessage("简历尚未完成解析，提交后会等待解析完成再分析。");
+    const selectedJobId = Number(selectedBatchJobIds[0]);
+    if (!Number.isInteger(selectedJobId) || selectedJobId <= 0) {
+      setBatchMessage("Selected position is missing a valid job ID.");
+      return;
     }
 
     batchAnalyzeMutation.mutate({
-      candidateIds: selectedBatchCandidateIds,
-      jobId: parseInt(selectedBatchJobIds[0]),
+      candidates: selectedBatchCandidates,
+      jobId: selectedJobId,
+      outputLanguage: "Chinese",
     });
-  };
-
-  const handleResumeParseAction = (candidate: Candidate) => {
-    const parseState = getCandidateResumeParseState(candidate);
-    if (parseState === "parsing") {
-      void queryClient.invalidateQueries({ queryKey: ["candidates"] });
-      setBatchMessage("已刷新简历解析状态。");
-      return;
-    }
-
-    if (parseState === "parsed") {
-      setBatchMessage("解析结果接口尚未接入，后端提供 GET /api/v1/resumes/:id/parse-result 后即可查看。");
-      return;
-    }
-
-    if (parseState === "pending" || parseState === "failed") {
-      setBatchMessage("解析接口尚未接入，后端提供 POST /api/v1/resumes/:id/parse 后即可启用。");
-    }
   };
 
   return (
@@ -668,7 +680,7 @@ export default function CandidatesPage() {
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {batchAnalyzeMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Batch Analyze
+            Run Screening
           </button>
         </div>
         {batchMessage && <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">{batchMessage}</div>}
@@ -726,7 +738,6 @@ export default function CandidatesPage() {
                               {candidate.resumeFilename || "Open resume"}
                             </a>
                           )}
-                          <ResumeParseActionButton candidate={candidate} parseState={resumeParseState} onClick={handleResumeParseAction} />
                         </div>
                         {resumeParseState === "failed" && candidate.resumeParseError && <p className="mt-1 text-xs text-rose-600">解析错误：{candidate.resumeParseError}</p>}
                         <p className="mt-2 text-sm text-gray-600">
@@ -868,38 +879,6 @@ function ResumeParseBadge({ candidate }: { candidate: Candidate }) {
       {getResumeParseStatusLabel(state)}
     </span>
   );
-}
-
-function ResumeParseActionButton({
-  candidate,
-  parseState,
-  onClick,
-}: {
-  candidate: Candidate;
-  parseState: CandidateResumeParseState;
-  onClick: (candidate: Candidate) => void;
-}) {
-  const label = getResumeParseActionLabel(parseState);
-  if (!label) {
-    return null;
-  }
-
-  return (
-    <button type="button" onClick={() => onClick(candidate)} className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100">
-      <ResumeParseActionIcon state={parseState} />
-      {label}
-    </button>
-  );
-}
-
-function ResumeParseActionIcon({ state }: { state: CandidateResumeParseState }) {
-  if (state === "parsed") {
-    return <Eye className="h-3.5 w-3.5" />;
-  }
-  if (state === "parsing" || state === "failed") {
-    return <RefreshCw className="h-3.5 w-3.5" />;
-  }
-  return <Sparkles className="h-3.5 w-3.5" />;
 }
 
 function Field({ label, value, onChange, type = "text", required }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
