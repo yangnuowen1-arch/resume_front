@@ -1,10 +1,12 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Calendar, ChevronLeft, ChevronRight, LoaderCircle, PlayCircle, Sparkles } from "lucide-react";
 import { listJobs, listScreeningTasks, runScreeningTask, type RunScreeningTaskResponse, type ScreeningTask } from "../../api";
 import { isRequestError, queryClient } from "../../request";
 
 const PAGE_SIZE = 20;
+const POLL_INTERVAL_MS = 2_000;
+const MAX_POLL_ATTEMPTS = 60;
 
 const OUTPUT_LANGUAGE_OPTIONS = [
   { value: "Chinese", label: "Chinese" },
@@ -32,6 +34,14 @@ function getTaskScore(screening: ScreeningTask): number | null | undefined {
 
 function getTaskKey(screening: ScreeningTask): string {
   return String(screening.id ?? screening.screeningResultId ?? `${screening.resumeId ?? "-"}-${screening.jobId ?? "-"}-${screening.createdAt ?? ""}`);
+}
+
+function getTaskId(screening: ScreeningTask): string {
+  return String(screening.screeningResultId ?? screening.id);
+}
+
+function isSameTask(screening: ScreeningTask, taskId: string): boolean {
+  return getTaskId(screening) === taskId || String(screening.id) === taskId;
 }
 
 function getInitials(name: string): string {
@@ -71,8 +81,11 @@ function getStatusColor(status: string): string {
   if (status === "success") {
     return "text-green-700 bg-green-100";
   }
-  if (status === "pending") {
+  if (status === "queued" || status === "pending") {
     return "text-yellow-700 bg-yellow-100";
+  }
+  if (status === "running") {
+    return "text-blue-700 bg-blue-100";
   }
   if (status === "failed") {
     return "text-red-700 bg-red-100";
@@ -80,12 +93,59 @@ function getStatusColor(status: string): string {
   return "text-gray-700 bg-gray-100";
 }
 
+function getStatusLabel(status: string): string {
+  if (status === "queued" || status === "pending") {
+    return "排队中";
+  }
+  if (status === "running") {
+    return "筛选中";
+  }
+  if (status === "success") {
+    return "已完成";
+  }
+  if (status === "failed") {
+    return "失败";
+  }
+  return status;
+}
+
+function isPollingStatus(status: string | undefined): boolean {
+  return status === "queued" || status === "running" || status === "pending";
+}
+
 function formatScore(score: number | null | undefined): string {
   return score === null || score === undefined ? "-" : `${score}%`;
 }
 
-function formatResultLabel(value: string | undefined): string {
+function formatResultLabel(value: string | null | undefined): string {
   return value ? value.replaceAll("_", " ") : "-";
+}
+
+function createSubmittedTask(result: RunScreeningTaskResponse): ScreeningTask {
+  return {
+    id: result.screeningResultId,
+    screeningResultId: result.screeningResultId,
+    applicationId: result.applicationId,
+    resumeId: result.resumeId,
+    jobId: result.jobId,
+    status: result.status,
+  };
+}
+
+function getLatestTaskMessage(task: ScreeningTask): string {
+  if (task.status === "queued" || task.status === "pending") {
+    return "任务已提交，等待后台筛选。";
+  }
+  if (task.status === "running") {
+    return "筛选中，结果会通过任务状态轮询刷新。";
+  }
+  if (task.status === "success") {
+    return "筛选已完成，结果来自任务状态轮询。";
+  }
+  if (task.status === "failed") {
+    return task.errorMessage ? `筛选失败：${task.errorMessage}` : "筛选失败，请查看任务错误信息。";
+  }
+  return "任务状态已更新。";
 }
 
 export default function ScreeningPage() {
@@ -94,7 +154,8 @@ export default function ScreeningPage() {
   const [jobId, setJobId] = useState("");
   const [outputLanguage, setOutputLanguage] = useState("Chinese");
   const [runFormError, setRunFormError] = useState<string | null>(null);
-  const [latestResult, setLatestResult] = useState<RunScreeningTaskResponse | null>(null);
+  const [latestTask, setLatestTask] = useState<ScreeningTask | null>(null);
+  const screeningPollRef = useRef({ attempts: 0, dataUpdatedAt: 0 });
 
   const jobsQuery = useQuery({
     queryKey: ["jobs", "screening-run-options"],
@@ -103,19 +164,41 @@ export default function ScreeningPage() {
 
   const screeningTasksQuery = useQuery({
     queryKey: ["screening-tasks", { page, pageSize: PAGE_SIZE }],
-    queryFn: () => listScreeningTasks({ page, pageSize: PAGE_SIZE }),
+    queryFn: () => listScreeningTasks({ page, pageSize: PAGE_SIZE, status: "all" }),
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      const latestTaskId = latestTask ? getTaskId(latestTask) : null;
+      const latestTaskFromList = latestTaskId ? items.find((task) => isSameTask(task, latestTaskId)) : undefined;
+      const latestTaskStatus = latestTaskFromList?.status ?? latestTask?.status;
+      const shouldPoll = items.some((task) => isPollingStatus(task.status)) || isPollingStatus(latestTaskStatus);
+
+      if (!shouldPoll) {
+        screeningPollRef.current = { attempts: 0, dataUpdatedAt: query.state.dataUpdatedAt };
+        return false;
+      }
+
+      if (query.state.dataUpdatedAt > 0 && query.state.dataUpdatedAt !== screeningPollRef.current.dataUpdatedAt) {
+        screeningPollRef.current = {
+          attempts: screeningPollRef.current.attempts + 1,
+          dataUpdatedAt: query.state.dataUpdatedAt,
+        };
+      }
+
+      return screeningPollRef.current.attempts >= MAX_POLL_ATTEMPTS ? false : POLL_INTERVAL_MS;
+    },
   });
 
   const runScreeningMutation = useMutation({
     mutationFn: runScreeningTask,
     onSuccess: (result) => {
       setRunFormError(null);
-      setLatestResult(result);
+      setLatestTask(createSubmittedTask(result));
+      screeningPollRef.current = { attempts: 0, dataUpdatedAt: 0 };
       setPage(1);
       void queryClient.invalidateQueries({ queryKey: ["screening-tasks"] });
     },
     onError: (error) => {
-      setLatestResult(null);
+      setLatestTask(null);
       setRunFormError(getErrorMessage(error, "Failed to run AI screening."));
     },
   });
@@ -124,7 +207,13 @@ export default function ScreeningPage() {
   const screeningTasks = screeningTasksQuery.data?.items ?? [];
   const total = screeningTasksQuery.data?.total ?? 0;
   const currentPage = screeningTasksQuery.data?.page ?? page;
-  const totalPages = screeningTasksQuery.data?.totalPages ?? Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const latestTaskId = latestTask ? getTaskId(latestTask) : null;
+  const refreshedLatestTask = latestTaskId ? screeningTasks.find((task) => isSameTask(task, latestTaskId)) : undefined;
+  const visibleLatestTask = refreshedLatestTask ? { ...refreshedLatestTask, screeningResultId: refreshedLatestTask.screeningResultId ?? refreshedLatestTask.id } : latestTask;
+  const shouldShowSubmittedTask = latestTask !== null && latestTaskId !== null && currentPage === 1 && !screeningTasks.some((task) => isSameTask(task, latestTaskId));
+  const displayedScreeningTasks = shouldShowSubmittedTask && visibleLatestTask ? [visibleLatestTask, ...screeningTasks].slice(0, PAGE_SIZE) : screeningTasks;
+  const displayedTotal = shouldShowSubmittedTask ? total + 1 : total;
+  const totalPages = Math.max(screeningTasksQuery.data?.totalPages ?? 1, Math.max(1, Math.ceil(displayedTotal / PAGE_SIZE)));
 
   const submitRunScreening = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -148,6 +237,11 @@ export default function ScreeningPage() {
       jobId: selectedJobId,
       outputLanguage,
     });
+  };
+
+  const changePage = (nextPage: number) => {
+    screeningPollRef.current = { attempts: 0, dataUpdatedAt: 0 };
+    setPage(nextPage);
   };
 
   return (
@@ -233,23 +327,35 @@ export default function ScreeningPage() {
           </div>
         )}
 
-        {latestResult && (
-          <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4">
+        {visibleLatestTask && (
+          <div
+            className={`mt-4 rounded-lg border p-4 ${
+              visibleLatestTask.status === "failed"
+                ? "border-red-200 bg-red-50"
+                : visibleLatestTask.status === "success"
+                  ? "border-green-200 bg-green-50"
+                  : "border-blue-200 bg-blue-50"
+            }`}
+          >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getScoreColor(latestResult.score)}`}>{formatScore(latestResult.score)}</span>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(latestResult.status)}`}>{latestResult.status}</span>
-                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-green-700 ring-1 ring-green-200">
-                    {formatResultLabel(latestResult.recommendation)}
-                  </span>
+                  {visibleLatestTask.status === "success" && <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getScoreColor(getTaskScore(visibleLatestTask))}`}>{formatScore(getTaskScore(visibleLatestTask))}</span>}
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(visibleLatestTask.status)}`}>{getStatusLabel(visibleLatestTask.status)}</span>
+                  {visibleLatestTask.status === "success" && (
+                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-green-700 ring-1 ring-green-200">
+                      {formatResultLabel(visibleLatestTask.recommendation)}
+                    </span>
+                  )}
                 </div>
-                <p className="text-sm font-medium text-gray-900">Screening result #{latestResult.screeningResultId}</p>
-                <p className="mt-1 text-sm text-gray-700">{latestResult.summary || "Screening completed."}</p>
+                <p className="text-sm font-medium text-gray-900">Screening task #{visibleLatestTask.screeningResultId ?? visibleLatestTask.id}</p>
+                <p className="mt-1 text-sm text-gray-700">{getLatestTaskMessage(visibleLatestTask)}</p>
               </div>
               <div className="shrink-0 text-sm text-gray-600">
-                <p>Application #{latestResult.applicationId}</p>
-                <p>Match: {formatResultLabel(latestResult.matchLevel)}</p>
+                <p>Application #{visibleLatestTask.applicationId ?? "-"}</p>
+                <p>Resume #{visibleLatestTask.resumeId ?? "-"}</p>
+                <p>Job #{visibleLatestTask.jobId ?? "-"}</p>
+                {visibleLatestTask.status === "success" && <p>Match: {formatResultLabel(visibleLatestTask.matchLevel)}</p>}
               </div>
             </div>
           </div>
@@ -261,19 +367,19 @@ export default function ScreeningPage() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-base font-semibold text-gray-900 md:text-lg">Screening Tasks</h2>
-              <p className="mt-1 text-xs text-gray-500 md:text-sm">Total {total} tasks</p>
+              <p className="mt-1 text-xs text-gray-500 md:text-sm">Total {displayedTotal} tasks</p>
             </div>
           </div>
         </div>
 
         <QueryState loading={screeningTasksQuery.isLoading} error={screeningTasksQuery.error} fallback="Failed to load screening tasks." />
 
-        {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && screeningTasks.length === 0 && (
+        {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && displayedScreeningTasks.length === 0 && (
           <div className="p-8 text-center text-sm text-gray-500">No screening tasks found.</div>
         )}
 
         <div className="hidden overflow-x-auto md:block">
-          {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && screeningTasks.length > 0 && (
+          {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && displayedScreeningTasks.length > 0 && (
             <table className="w-full">
               <thead className="border-b border-gray-200 bg-gray-50">
                 <tr>
@@ -283,7 +389,7 @@ export default function ScreeningPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {screeningTasks.map((screening) => {
+                {displayedScreeningTasks.map((screening) => {
                   const score = getTaskScore(screening);
 
                   return (
@@ -303,7 +409,7 @@ export default function ScreeningPage() {
                       <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{formatResultLabel(screening.matchLevel)}</td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{formatResultLabel(screening.recommendation)}</td>
                       <td className="whitespace-nowrap px-6 py-4">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{getStatusLabel(screening.status)}</span>
                       </td>
                       <td className="max-w-64 px-6 py-4 text-sm text-red-600">
                         <span className="block truncate" title={screening.errorMessage ?? undefined}>{screening.errorMessage || "-"}</span>
@@ -322,9 +428,9 @@ export default function ScreeningPage() {
           )}
         </div>
 
-        {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && screeningTasks.length > 0 && (
+        {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && displayedScreeningTasks.length > 0 && (
           <div className="divide-y divide-gray-200 md:hidden">
-            {screeningTasks.map((screening) => {
+            {displayedScreeningTasks.map((screening) => {
               const score = getTaskScore(screening);
 
               return (
@@ -334,7 +440,7 @@ export default function ScreeningPage() {
                       <p className="truncate text-sm font-medium text-gray-900">{getCandidateName(screening)}</p>
                       <p className="mt-1 truncate text-sm text-gray-600">{getPosition(screening)}</p>
                     </div>
-                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
+                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{getStatusLabel(screening.status)}</span>
                   </div>
                   <div className="flex items-center justify-between text-sm text-gray-500">
                     <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(score)}`}>{formatScore(score)}</span>
@@ -355,7 +461,7 @@ export default function ScreeningPage() {
         )}
 
         {!screeningTasksQuery.isLoading && !screeningTasksQuery.isError && (
-          <Pagination currentPage={currentPage} totalPages={totalPages} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
+          <Pagination currentPage={currentPage} totalPages={totalPages} total={displayedTotal} pageSize={PAGE_SIZE} onPageChange={changePage} />
         )}
       </div>
     </div>

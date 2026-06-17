@@ -1,20 +1,22 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Edit3, FileText, LoaderCircle, Plus, Save, Search, Sparkles, X } from "lucide-react";
 import {
+  batchAnalyzeCandidates,
   CANDIDATE_STATUS_OPTIONS,
   createCandidate,
   listCandidates,
   listJobCategories,
   listJobs,
-  runScreeningTask,
+  listScreeningTasks,
   updateCandidate,
   type ApiId,
+  type BatchAnalyzeCandidateResult,
   type Candidate,
   type CreateCandidateResponse,
   type JobCategory,
   type Job,
-  type RunScreeningTaskResponse,
+  type ScreeningTask,
   type UpdateCandidateRequest,
   type UpdateCandidateResponse,
 } from "../../api";
@@ -70,14 +72,16 @@ interface SelectOption {
 interface RunCandidateScreeningPayload {
   candidates: Candidate[];
   jobId: ApiId;
-  outputLanguage: string;
 }
 
 interface CandidateScreeningRunResult {
   candidate: Candidate;
-  result?: RunScreeningTaskResponse;
+  result?: BatchAnalyzeCandidateResult;
   error?: unknown;
 }
+
+const POLL_INTERVAL_MS = 2_000;
+const MAX_POLL_ATTEMPTS = 60;
 
 const GENDER_OPTIONS: SelectOption[] = [
   { value: "男", label: "男" },
@@ -259,15 +263,6 @@ function getResumeParseStatusStyle(state: CandidateResumeParseState): string {
   return "bg-amber-50 text-amber-700 ring-amber-200";
 }
 
-function formatCandidateNameList(candidates: Candidate[]): string {
-  const names = candidates.map((candidate) => candidate.name.trim()).filter(Boolean);
-  const visibleNames = names.slice(0, 3).join("、");
-  if (!visibleNames) {
-    return `${candidates.length} 位候选人`;
-  }
-  return candidates.length > 3 ? `${visibleNames} 等 ${candidates.length} 位候选人` : visibleNames;
-}
-
 function getResumeUploadMessage(payload: Pick<UpdateCandidateRequest, "file" | "rawText">, result: CreateCandidateResponse | UpdateCandidateResponse): string | null {
   if (!payload.file) {
     return null;
@@ -286,21 +281,41 @@ function getResumeUploadMessage(payload: Pick<UpdateCandidateRequest, "file" | "
   return "上传成功，等待解析。";
 }
 
-function isSuccessfulScreeningRun(item: CandidateScreeningRunResult): boolean {
-  return item.result?.status === "success";
+function isTerminalScreeningStatus(status: string | undefined): boolean {
+  return status === "success" || status === "failed";
+}
+
+function getScreeningTaskId(task: ScreeningTask): string {
+  return String(task.screeningResultId ?? task.id);
+}
+
+function hasOpenTrackedScreeningTasks(taskIds: string[], tasks: ScreeningTask[]): boolean {
+  if (taskIds.length === 0) {
+    return false;
+  }
+
+  const tasksById = new Map(tasks.map((task) => [getScreeningTaskId(task), task]));
+  return taskIds.some((taskId) => {
+    const task = tasksById.get(taskId);
+    return !task || !isTerminalScreeningStatus(task.status);
+  });
+}
+
+function isSubmittedScreeningRun(item: CandidateScreeningRunResult): boolean {
+  return item.result?.status !== "failed" && item.result?.screeningResultId !== undefined;
 }
 
 function getScreeningRunMessage(results: CandidateScreeningRunResult[]): string {
-  const succeeded = results.filter(isSuccessfulScreeningRun);
-  const failed = results.filter((item) => !isSuccessfulScreeningRun(item));
-  const parts = [`AI 筛选完成：成功 ${succeeded.length}/${results.length}，失败 ${failed.length}。`];
+  const submitted = results.filter(isSubmittedScreeningRun);
+  const failed = results.filter((item) => !isSubmittedScreeningRun(item));
+  const parts = [`AI 筛选任务已提交：成功 ${submitted.length}/${results.length}，失败 ${failed.length}。`];
 
-  if (succeeded.length > 0) {
-    const scoreSummary = succeeded
+  if (submitted.length > 0) {
+    const taskSummary = submitted
       .slice(0, 3)
-      .map((item) => `${item.candidate.name} ${item.result?.score ?? "-"}分`)
+      .map((item) => `${item.candidate.name} #${String(item.result?.screeningResultId ?? "-")}`)
       .join("、");
-    parts.push(`分数：${scoreSummary}${succeeded.length > 3 ? " 等" : ""}。`);
+    parts.push(`任务：${taskSummary}${submitted.length > 3 ? " 等" : ""}。`);
   }
 
   if (failed.length > 0) {
@@ -311,29 +326,21 @@ function getScreeningRunMessage(results: CandidateScreeningRunResult[]): string 
     parts.push(`失败：${failedSummary}${failed.length > 3 ? " 等" : ""}。`);
   }
 
-  parts.push("筛选任务列表已刷新，可查看 status、aiScore、matchLevel、recommendation 和 errorMessage。");
+  parts.push("结果将异步生成，请到筛选任务列表查看 queued/running/success/failed、aiScore、matchLevel、recommendation 和 errorMessage。");
   return parts.join(" ");
 }
 
 async function runCandidateScreening(payload: RunCandidateScreeningPayload): Promise<CandidateScreeningRunResult[]> {
-  return Promise.all(
-    payload.candidates.map(async (candidate) => {
-      if (!candidate.resumeId) {
-        return { candidate, error: new Error("Missing resume ID") };
-      }
+  const response = await batchAnalyzeCandidates({
+    candidateIds: payload.candidates.map((candidate) => candidate.id),
+    jobId: payload.jobId,
+  });
+  const resultByCandidateId = new Map(response.map((item) => [String(item.candidateId), item]));
 
-      try {
-        const result = await runScreeningTask({
-          resumeId: candidate.resumeId,
-          jobId: payload.jobId,
-          outputLanguage: payload.outputLanguage,
-        });
-        return { candidate, result };
-      } catch (error) {
-        return { candidate, error };
-      }
-    }),
-  );
+  return payload.candidates.map((candidate) => {
+    const result = resultByCandidateId.get(String(candidate.id));
+    return result ? { candidate, result } : { candidate, error: new Error("No batch analyze result returned") };
+  });
 }
 
 function getSelectOptionLabel(options: SelectOption[], value: string | undefined): string {
@@ -371,6 +378,8 @@ export default function CandidatesPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(() => new Set());
   const [batchMessage, setBatchMessage] = useState<string | null>(null);
+  const [batchTaskIds, setBatchTaskIds] = useState<string[]>([]);
+  const batchPollRef = useRef({ attempts: 0, dataUpdatedAt: 0 });
 
   const candidatesQuery = useQuery({
     queryKey: ["candidates", { keyword, source, status }],
@@ -410,6 +419,30 @@ export default function CandidatesPage() {
       (candidatesQuery.data?.items ?? []).some((candidate) => getCandidateJobId(candidate) !== undefined),
   });
 
+  const batchTasksQuery = useQuery({
+    queryKey: ["screening-tasks", "candidate-batch", batchTaskIds],
+    queryFn: () => listScreeningTasks({ page: 1, pageSize: 200, status: "all" }),
+    enabled: batchTaskIds.length > 0,
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      const shouldPoll = hasOpenTrackedScreeningTasks(batchTaskIds, items);
+
+      if (!shouldPoll) {
+        batchPollRef.current = { attempts: 0, dataUpdatedAt: query.state.dataUpdatedAt };
+        return false;
+      }
+
+      if (query.state.dataUpdatedAt > 0 && query.state.dataUpdatedAt !== batchPollRef.current.dataUpdatedAt) {
+        batchPollRef.current = {
+          attempts: batchPollRef.current.attempts + 1,
+          dataUpdatedAt: query.state.dataUpdatedAt,
+        };
+      }
+
+      return batchPollRef.current.attempts >= MAX_POLL_ATTEMPTS ? false : POLL_INTERVAL_MS;
+    },
+  });
+
   const createCandidateMutation = useMutation({
     mutationFn: createCandidate,
     onSuccess: (result, payload) => {
@@ -440,11 +473,16 @@ export default function CandidatesPage() {
     mutationFn: runCandidateScreening,
     onSuccess: (results) => {
       setBatchMessage(getScreeningRunMessage(results));
-      setSelectedCandidateIds(new Set(results.filter((item) => !isSuccessfulScreeningRun(item)).map((item) => String(item.candidate.id))));
+      setSelectedCandidateIds(new Set(results.filter((item) => !isSubmittedScreeningRun(item)).map((item) => String(item.candidate.id))));
+      batchPollRef.current = { attempts: 0, dataUpdatedAt: 0 };
+      setBatchTaskIds(Array.from(new Set(results.filter(isSubmittedScreeningRun).map((item) => String(item.result?.screeningResultId)))));
       void queryClient.invalidateQueries({ queryKey: ["candidates"] });
       void queryClient.invalidateQueries({ queryKey: ["screening-tasks"] });
     },
-    onError: (error) => setBatchMessage(getErrorMessage(error, "Failed to analyze selected candidates.")),
+    onError: (error) => {
+      setBatchTaskIds([]);
+      setBatchMessage(getErrorMessage(error, "Failed to analyze selected candidates."));
+    },
   });
 
   const isSaving = createCandidateMutation.isPending || updateCandidateMutation.isPending;
@@ -568,6 +606,11 @@ export default function CandidatesPage() {
   const categoryOptions = getCategoryOptions(jobCategoriesQuery.data?.items);
   const currentPositionOptions = getPositionOptions(jobsQuery.data?.items, form.currentJobId, form.currentPosition);
   const jobTitleById = new Map((jobsLookupQuery.data?.items ?? []).map((job) => [String(job.id), job.title]));
+  const batchTaskItems = batchTasksQuery.data?.items ?? [];
+  const activeBatchTaskCount = batchTaskIds.filter((taskId) => {
+    const task = batchTaskItems.find((item) => getScreeningTaskId(item) === taskId);
+    return !task || !isTerminalScreeningStatus(task.status);
+  }).length;
 
   const toggleCandidateSelection = (candidateId: ApiId, checked: boolean) => {
     setSelectedCandidateIds((current) => {
@@ -584,24 +627,10 @@ export default function CandidatesPage() {
 
   const submitBatchAnalyze = () => {
     setBatchMessage(null);
+    setBatchTaskIds([]);
+    batchPollRef.current = { attempts: 0, dataUpdatedAt: 0 };
     if (selectedBatchCount === 0) {
       setBatchMessage("Select at least one candidate.");
-      return;
-    }
-
-    const candidatesWithoutResume = selectedBatchCandidates.filter((candidate) => !candidate.resumeId);
-    if (candidatesWithoutResume.length > 0) {
-      setBatchMessage(
-        candidatesWithoutResume.length === 1
-          ? `${formatCandidateNameList(candidatesWithoutResume)}：该候选人未上传简历。`
-          : `以下候选人未上传简历：${formatCandidateNameList(candidatesWithoutResume)}。`,
-      );
-      return;
-    }
-
-    const candidatesWithFailedParse = selectedBatchCandidates.filter((candidate) => getCandidateResumeParseState(candidate) === "failed");
-    if (candidatesWithFailedParse.length > 0) {
-      setBatchMessage(`简历解析失败，请重新上传或重新解析：${formatCandidateNameList(candidatesWithFailedParse)}。`);
       return;
     }
 
@@ -624,7 +653,6 @@ export default function CandidatesPage() {
     batchAnalyzeMutation.mutate({
       candidates: selectedBatchCandidates,
       jobId: selectedJobId,
-      outputLanguage: "Chinese",
     });
   };
 
@@ -684,6 +712,11 @@ export default function CandidatesPage() {
           </button>
         </div>
         {batchMessage && <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">{batchMessage}</div>}
+        {activeBatchTaskCount > 0 && (
+          <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+            正在轮询 {activeBatchTaskCount} 个筛选任务，完成或失败后会自动停止。
+          </div>
+        )}
       </section>
 
       <QueryState loading={candidatesQuery.isLoading} error={candidatesQuery.error} fallback="Failed to load candidates." />

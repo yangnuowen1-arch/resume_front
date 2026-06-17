@@ -1,11 +1,35 @@
+import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Users, Clock, CheckCircle, XCircle, TrendingUp, Calendar, LoaderCircle } from "lucide-react";
 import { listScreeningTasks, type ScreeningTask } from "../../api";
 import { isRequestError } from "../../request";
 
+const POLL_INTERVAL_MS = 2_000;
+const MAX_POLL_ATTEMPTS = 60;
+
 function getErrorMessage(error: unknown, fallback: string): string {
   return isRequestError(error) ? error.message : fallback;
+}
+
+function isPollingStatus(status: string | undefined): boolean {
+  return status === "queued" || status === "running" || status === "pending";
+}
+
+function getStatusLabel(status: string): string {
+  if (status === "queued" || status === "pending") {
+    return "排队中";
+  }
+  if (status === "running") {
+    return "筛选中";
+  }
+  if (status === "success") {
+    return "已完成";
+  }
+  if (status === "failed") {
+    return "失败";
+  }
+  return status;
 }
 
 function getCandidateName(screening: ScreeningTask): string {
@@ -43,9 +67,29 @@ function formatTaskDate(value?: string): string {
 }
 
 export default function DashboardPage() {
+  const screeningPollRef = useRef({ attempts: 0, dataUpdatedAt: 0 });
+
   const screeningTasksQuery = useQuery({
     queryKey: ["screening-tasks", "recent"],
-    queryFn: () => listScreeningTasks({ page: 1, pageSize: 10 }),
+    queryFn: () => listScreeningTasks({ page: 1, pageSize: 10, status: "all" }),
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      const shouldPoll = items.some((task) => isPollingStatus(task.status));
+
+      if (!shouldPoll) {
+        screeningPollRef.current = { attempts: 0, dataUpdatedAt: query.state.dataUpdatedAt };
+        return false;
+      }
+
+      if (query.state.dataUpdatedAt > 0 && query.state.dataUpdatedAt !== screeningPollRef.current.dataUpdatedAt) {
+        screeningPollRef.current = {
+          attempts: screeningPollRef.current.attempts + 1,
+          dataUpdatedAt: query.state.dataUpdatedAt,
+        };
+      }
+
+      return screeningPollRef.current.attempts >= MAX_POLL_ATTEMPTS ? false : POLL_INTERVAL_MS;
+    },
   });
 
   const stats = [
@@ -69,8 +113,11 @@ export default function DashboardPage() {
     if (status === "success") {
       return "text-green-700 bg-green-100";
     }
-    if (status === "pending") {
+    if (status === "queued" || status === "pending") {
       return "text-yellow-700 bg-yellow-100";
+    }
+    if (status === "running") {
+      return "text-blue-700 bg-blue-100";
     }
     if (status === "failed") {
       return "text-red-700 bg-red-100";
@@ -158,7 +205,7 @@ export default function DashboardPage() {
                     </td>
                     <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{getPosition(screening)}</td>
                     <td className="whitespace-nowrap px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(screening.aiScore)}`}>{screening.aiScore ?? "-"}{screening.aiScore !== null && screening.aiScore !== undefined ? "%" : ""}</span></td>
-                    <td className="whitespace-nowrap px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span></td>
+                    <td className="whitespace-nowrap px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{getStatusLabel(screening.status)}</span></td>
                     <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500"><div className="flex items-center gap-1"><Calendar className="h-4 w-4" />{formatTaskDate(screening.date ?? screening.createdAt)}</div></td>
                   </tr>
                 ))}
@@ -175,7 +222,7 @@ export default function DashboardPage() {
                     <p className="truncate text-sm font-medium text-gray-900">{getCandidateName(screening)}</p>
                     <p className="mt-1 truncate text-sm text-gray-600">{getPosition(screening)}</p>
                   </div>
-                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{screening.status}</span>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(screening.status)}`}>{getStatusLabel(screening.status)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm text-gray-500">
                   <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${getScoreColor(screening.aiScore)}`}>{screening.aiScore ?? "-"}{screening.aiScore !== null && screening.aiScore !== undefined ? "%" : ""}</span>

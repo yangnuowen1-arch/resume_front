@@ -1,7 +1,7 @@
 import { request } from "../request";
 import { normalizePaginatedResponse, type ApiId, type ApiPaginatedResponse, type PaginatedResponse } from "./types";
 
-export type ScreeningTaskStatus = "pending" | "success" | "failed" | "all" | string;
+export type ScreeningTaskStatus = "queued" | "running" | "success" | "failed" | string;
 
 export interface ScreeningTask {
   id: ApiId;
@@ -20,10 +20,10 @@ export interface ScreeningTask {
   date?: string;
   createdAt?: string;
   createdBy?: ApiId;
-  matchLevel?: string;
-  recommendation?: string;
-  summary?: string;
-  markdownReport?: string;
+  matchLevel?: string | null;
+  recommendation?: string | null;
+  summary?: string | null;
+  markdownReport?: string | null;
   errorMessage?: string | null;
 }
 
@@ -31,7 +31,7 @@ export interface ListScreeningTasksParams {
   page?: number;
   pageSize?: number;
   keyword?: string;
-  status?: ScreeningTaskStatus;
+  status?: ScreeningTaskStatus | "all";
   jobId?: number;
   candidateId?: number;
 }
@@ -41,7 +41,7 @@ export type ListScreeningTasksResponse = PaginatedResponse<ScreeningTask>;
 export interface RunScreeningTaskRequest {
   resumeId: ApiId;
   jobId: ApiId;
-  outputLanguage: string;
+  outputLanguage?: string;
 }
 
 export interface RunScreeningTaskResponse {
@@ -49,11 +49,6 @@ export interface RunScreeningTaskResponse {
   applicationId: ApiId;
   resumeId: ApiId;
   jobId: ApiId;
-  score: number;
-  matchLevel: string;
-  recommendation: string;
-  summary: string;
-  markdownReport: string;
   status: ScreeningTaskStatus;
 }
 

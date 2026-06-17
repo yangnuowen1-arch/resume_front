@@ -2,8 +2,11 @@ export { login, register } from "./auth";
 export type { LoginResponse } from "./auth";
 export { createApplication, listApplications } from "./applications";
 export type { Application, ApplicationStatus, CreateApplicationRequest, ListApplicationsParams, ListApplicationsResponse } from "./applications";
-export { CANDIDATE_STATUS_OPTIONS, createCandidate, listCandidates, updateCandidate } from "./candidates";
+export { CANDIDATE_STATUS_OPTIONS, batchAnalyzeCandidates, createCandidate, listCandidates, updateCandidate } from "./candidates";
 export type {
+  BatchAnalyzeCandidateResult,
+  BatchAnalyzeCandidatesRequest,
+  BatchAnalyzeCandidatesResponse,
   Candidate,
   CandidateStatus,
   CreateCandidateRequest,
