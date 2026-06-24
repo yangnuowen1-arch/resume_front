@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>简历筛选可视化 - 效果图</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Segoe UI", sans-serif; }
+  /* 高亮原文片段 */
+  .ev { border-radius: 3px; padding: 1px 2px; cursor: pointer; transition: all .15s; scroll-margin-top: 90px; }
+  .ev-pass   { background: #dcfce7; box-shadow: inset 0 -2px 0 #22c55e; }
+  .ev-partial{ background: #fef9c3; box-shadow: inset 0 -2px 0 #eab308; }
+  .ev-miss   { background: #fee2e2; box-shadow: inset 0 -2px 0 #ef4444; }
+  .ev.active { outline: 2px solid #2563eb; outline-offset: 1px; }
+  .req-card { cursor: pointer; transition: all .15s; }
+  .req-card:hover { transform: translateX(-2px); }
+  .req-card.active { box-shadow: 0 0 0 2px #2563eb; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+<!-- 顶部栏 -->
+<header class="sticky top-0 z-20 border-b border-gray-200 bg-white">
+  <div class="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-3">
+    <div class="flex items-center gap-4">
+      <a href="#" class="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900">&larr; 返回筛选列表</a>
+      <div class="h-5 w-px bg-gray-200"></div>
+      <div class="flex items-center gap-3">
+        <div class="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-sm font-medium text-white">张伟</div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-base font-semibold text-gray-900">张伟</h1>
+            <span class="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">高级前端工程师</span>
+          </div>
+          <p class="text-xs text-gray-400">resume_zhangwei.pdf · 解析于 2026-06-24</p>
+        </div>
+      </div>
+    </div>
+    <div class="flex items-center gap-4">
+      <div class="text-right">
+        <div class="text-xs text-gray-400">AI 匹配度</div>
+        <div class="flex items-baseline gap-1">
+          <span class="text-2xl font-bold text-green-600">88</span>
+          <span class="text-xs text-gray-400">/100</span>
+        </div>
+      </div>
+      <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1.5 text-sm font-medium text-green-700">
+        ● 建议面试
+      </span>
+    </div>
+  </div>
+</header>
+
+<!-- 图例 -->
+<div class="mx-auto max-w-[1400px] px-6 pt-4">
+  <div class="flex items-center gap-4 text-xs text-gray-500">
+    <span>原文标注：</span>
+    <span class="inline-flex items-center gap-1"><span class="ev-pass inline-block h-3 w-5"></span> 满足</span>
+    <span class="inline-flex items-center gap-1"><span class="ev-partial inline-block h-3 w-5"></span> 部分满足</span>
+    <span class="inline-flex items-center gap-1"><span class="ev-miss inline-block h-3 w-5"></span> 缺失/不符</span>
+    <span class="ml-2 text-gray-400">点击右侧任意要求 → 左侧自动定位高亮</span>
+  </div>
+</div>
+
+<!-- 主体：左右分栏 -->
+<main class="mx-auto grid max-w-[1400px] grid-cols-1 gap-5 px-6 py-4 lg:grid-cols-[1.1fr_1fr]">
+
+  <!-- 左：简历原文 -->
+  <section class="rounded-xl border border-gray-200 bg-white">
+    <div class="sticky top-[61px] z-10 flex items-center justify-between rounded-t-xl border-b border-gray-100 bg-white/95 px-5 py-3 backdrop-blur">
+      <h2 class="text-sm font-semibold text-gray-700">候选人简历原文</h2>
+      <span class="text-xs text-gray-400">命中 6 处</span>
+    </div>
+    <div class="max-h-[calc(100vh-220px)] overflow-y-auto p-6 text-[13px] leading-7 text-gray-700">
+      <h3 class="text-base font-bold text-gray-900">张伟 · 高级前端工程师</h3>
+      <p class="text-gray-400">zhangwei@email.com · +86 138-0000-0000 · 上海</p>
+      <hr class="my-3" />
+
+      <p class="font-semibold text-gray-900">工作经历</p>
+      <p><b>字节跳动</b> · 高级前端工程师 · 2019.07 - 至今</p>
+      <p>负责抖音电商中后台体系建设，<span class="ev ev-pass" id="ev-1" data-req="r1">拥有 6 年以上前端开发经验</span>，主导多个百万级 DAU 项目。
+      技术栈以 <span class="ev ev-pass" id="ev-2" data-req="r2">React 与 TypeScript</span> 为主，深度参与组件库与微前端架构设计。</p>
+      <p>主导前端性能优化专项，将首屏加载从 4.2s 优化至 1.1s，
+      <span class="ev ev-partial" id="ev-4" data-req="r4">推动团队工程化与 CI/CD 流程</span>（仅前端构建侧，未涉及完整 DevOps）。</p>
+
+      <p class="mt-3 font-semibold text-gray-900">项目经验</p>
+      <p>电商商家后台：基于 <span class="ev ev-pass" id="ev-2b" data-req="r2">React 18 + TS</span> + Vite 重构，
+      引入 <span class="ev ev-partial" id="ev-3" data-req="r3">状态管理（Zustand）</span>，团队协作开发。</p>
+      <p>数据可视化大屏：使用 ECharts 与 WebGL 渲染十万级数据点。</p>
+
+      <p class="mt-3 font-semibold text-gray-900">教育背景</p>
+      <p><span class="ev ev-pass" id="ev-5" data-req="r5">上海交通大学 · 计算机科学与技术 · 本科</span> · 2013-2017</p>
+
+      <p class="mt-3 font-semibold text-gray-900">技能</p>
+      <p>React / TypeScript / Vite / Webpack / Node.js。
+      <span class="text-gray-400">（未提及 Vue 相关经验）</span></p>
+      <p class="text-gray-400 italic">岗位要求的"团队管理 / 带人经验"在简历中未找到对应描述。</p>
+    </div>
+  </section>
+
+  <!-- 右：要求比对 -->
+  <section class="space-y-3">
+    <div class="rounded-xl border border-gray-200 bg-white p-4">
+      <h2 class="mb-1 text-sm font-semibold text-gray-700">岗位要求比对</h2>
+      <div class="flex gap-3 text-xs text-gray-500">
+        <span>满足 <b class="text-green-600">4</b></span>
+        <span>部分 <b class="text-yellow-600">2</b></span>
+        <span>缺失 <b class="text-red-500">1</b></span>
+      </div>
+    </div>
+
+    <!-- 要求卡片列表 -->
+    <div class="space-y-2.5">
+
+      <div class="req-card rounded-xl border border-green-200 bg-white p-4" data-target="ev-1">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-medium text-gray-900">5 年以上前端开发经验</p>
+            <p class="mt-1 text-xs text-gray-500">证据：「拥有 6 年以上前端开发经验」</p>
+          </div>
+          <span class="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">满足</span>
+        </div>
+      </div>
+
+      <div class="req-card rounded-xl border border-green-200 bg-white p-4" data-target="ev-2">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-medium text-gray-900">精通 React 与 TypeScript</p>
+            <p class="mt-1 text-xs text-gray-500">证据：「技术栈以 React 与 TypeScript 为主」</p>
+          </div>
+          <span class="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">满足</span>
+        </div>
+      </div>
+
+      <div class="req-card rounded-xl border border-yellow-200 bg-white p-4" data-target="ev-3">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-medium text-gray-900">熟悉前端状态管理方案</p>
+            <p class="mt-1 text-xs text-gray-500">证据：「引入状态管理（Zustand）」 · 经验较浅</p>
+          </div>
+          <span class="shrink-0 rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">部分满足</span>
+        </div>
+      </div>
+
+      <div class="req-card rounded-xl border border-yellow-200 bg-white p-4" data-target="ev-4">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-medium text-gray-900">具备工程化 / CI/CD 经验</p>
+            <p class="mt-1 text-xs text-gray-500">证据：「推动团队工程化与 CI/CD 流程」 · 仅前端构建侧</p>
+          </div>
+          <span class="shrink-0 rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700">部分满足</span>
+        </div>
+      </div>
+
+      <div class="req-card rounded-xl border border-green-200 bg-white p-4" data-target="ev-5">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-medium text-gray-900">本科及以上学历，计算机相关专业</p>
+            <p class="mt-1 text-xs text-gray-500">证据：「上海交通大学 · 计算机科学与技术 · 本科」</p>
+          </div>
+          <span class="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">满足</span>
+        </div>
+      </div>
+
+      <div class="req-card rounded-xl border border-red-200 bg-white p-4 opacity-90" data-target="">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-medium text-gray-900">有团队管理 / 带人经验</p>
+            <p class="mt-1 text-xs text-red-400">简历中未找到对应描述</p>
+          </div>
+          <span class="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600">缺失</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- AI 总评 -->
+    <div class="rounded-xl border border-gray-200 bg-gradient-to-br from-blue-50 to-white p-4">
+      <h3 class="mb-1.5 text-sm font-semibold text-gray-700">AI 总评</h3>
+      <p class="text-xs leading-6 text-gray-600">候选人前端核心技术栈（React/TS）匹配度高，工程经验扎实，性能优化亮点突出。状态管理与 CI/CD 有一定经验但深度有限；岗位要求的团队管理经验在简历中缺失，建议面试时重点考察带人与跨团队协作能力。</p>
+    </div>
+  </section>
+</main>
+
+<script>
+  // 点击右侧要求 -> 左侧定位 + 高亮
+  document.querySelectorAll('.req-card').forEach(card => {
+    card.addEventListener('click', () => {
+      document.querySelectorAll('.req-card').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.ev').forEach(e => e.classList.remove('active'));
+      card.classList.add('active');
+      const id = card.dataset.target;
+      if (!id) return;
+      const el = document.getElementById(id);
+      if (el) {
+        el.classList.add('active');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  });
+  // 点击左侧高亮 -> 右侧对应卡片
+  document.querySelectorAll('.ev').forEach(ev => {
+    ev.addEventListener('click', () => {
+      const req = ev.dataset.req;
+      const card = document.querySelector(`.req-card[data-target="${ev.id}"]`) ||
+                   document.querySelector(`.req-card[data-target^="ev"][data-target*="${req}"]`);
+      document.querySelectorAll('.req-card').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.ev').forEach(e => e.classList.remove('active'));
+      ev.classList.add('active');
+      if (card) { card.classList.add('active'); card.scrollIntoView({ behavior:'smooth', block:'center' }); }
+    });
+  });
+</script>
+</body>
+</html>

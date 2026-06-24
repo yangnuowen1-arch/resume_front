@@ -23,14 +23,20 @@ export type { CreateJobRequest, Job, JobDynamicFields, JobDynamicFieldValue, Job
 export { listOperationLogs } from "./operation-logs";
 export type { ListOperationLogsParams, ListOperationLogsResponse, OperationLog } from "./operation-logs";
 export type { Resume, ResumeParseStatus } from "./resumes";
-export { listScreeningTasks, runScreeningTask } from "./screening-tasks";
+export { getScreeningTask, getScreeningTaskStatus, listScreeningTasks, runScreeningTask } from "./screening-tasks";
 export type {
+  GetScreeningTaskStatusResponse,
   ListScreeningTasksParams,
   ListScreeningTasksResponse,
+  RequirementEvidence,
+  RequirementMatchStatus,
   RunScreeningTaskRequest,
   RunScreeningTaskResponse,
+  ScreeningRequirement,
   ScreeningTask,
+  ScreeningTaskDetail,
   ScreeningTaskStatus,
+  ScreeningTaskStatusItem,
 } from "./screening-tasks";
 export { createTagGroup, listGroupedTags, listTagGroups, updateTagGroup } from "./tag-groups";
 export type { CreateTagGroupRequest, GroupedTagGroup, ListTagGroupsParams, ListTagGroupsResponse, TagGroup, TagGroupStatus, UpdateTagGroupRequest } from "./tag-groups";

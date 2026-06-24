@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Calendar, ChevronLeft, ChevronRight, LoaderCircle, PlayCircle, Sparkles } from "lucide-react";
+import { Calendar, ChevronLeft, ChevronRight, Eye, LoaderCircle, PlayCircle, Sparkles } from "lucide-react";
 import { listJobs, listScreeningTasks, runScreeningTask, type RunScreeningTaskResponse, type ScreeningTask } from "../../api";
 import { isRequestError, queryClient } from "../../request";
 
@@ -383,7 +384,7 @@ export default function ScreeningPage() {
             <table className="w-full">
               <thead className="border-b border-gray-200 bg-gray-50">
                 <tr>
-                  {["Candidate", "Position", "AI Score", "Match", "Recommendation", "Status", "Error", "Date"].map((head) => (
+                  {["Candidate", "Position", "AI Score", "Match", "Recommendation", "Status", "Error", "Date", ""].map((head) => (
                     <th key={head} className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">{head}</th>
                   ))}
                 </tr>
@@ -420,6 +421,17 @@ export default function ScreeningPage() {
                           {formatTaskDate(screening.date ?? screening.createdAt)}
                         </div>
                       </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-right">
+                        {screening.status === "success" && (
+                          <Link
+                            to={`/screening/${getTaskId(screening)}`}
+                            className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            Detail
+                          </Link>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -454,6 +466,15 @@ export default function ScreeningPage() {
                     <span>Recommendation: {formatResultLabel(screening.recommendation)}</span>
                     {screening.errorMessage && <span className="text-red-600">Error: {screening.errorMessage}</span>}
                   </div>
+                  {screening.status === "success" && (
+                    <Link
+                      to={`/screening/${getTaskId(screening)}`}
+                      className="mt-3 inline-flex items-center gap-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      Detail
+                    </Link>
+                  )}
                 </div>
               );
             })}
