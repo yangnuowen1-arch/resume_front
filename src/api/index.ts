@@ -16,6 +16,12 @@ export type {
   UpdateCandidateRequest,
   UpdateCandidateResponse,
 } from "./candidates";
+export { getGoogleMailboxOAuthUrl, getMailboxScan } from "./mailbox";
+export type {
+  GoogleMailboxOAuthUrlResponse,
+  MailboxScanStatus,
+  MailboxScanTask,
+} from "./mailbox";
 export { createJobCategory, listJobCategories, updateJobCategory } from "./job-categories";
 export type { CreateJobCategoryRequest, JobCategory, JobCategoryStatus, ListJobCategoriesParams, ListJobCategoriesResponse, UpdateJobCategoryRequest } from "./job-categories";
 export { bindJobTags, createJob, deleteJob, getJob, listJobs, updateJob } from "./jobs";

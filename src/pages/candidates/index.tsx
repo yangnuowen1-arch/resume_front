@@ -1,10 +1,12 @@
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Edit3, FileText, LoaderCircle, Plus, Save, Search, Sparkles, X } from "lucide-react";
+import { Edit3, FileText, LoaderCircle, Mail, Plus, Save, Search, Sparkles, X } from "lucide-react";
 import {
   batchAnalyzeCandidates,
   CANDIDATE_STATUS_OPTIONS,
   createCandidate,
+  getGoogleMailboxOAuthUrl,
+  getMailboxScan,
   listCandidates,
   listJobCategories,
   listJobs,
@@ -16,6 +18,7 @@ import {
   type CreateCandidateResponse,
   type JobCategory,
   type Job,
+  type MailboxScanTask,
   type ScreeningTask,
   type UpdateCandidateRequest,
   type UpdateCandidateResponse,
@@ -82,6 +85,8 @@ interface CandidateScreeningRunResult {
 
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_ATTEMPTS = 60;
+const MAILBOX_POLL_INTERVAL_MS = 1_500;
+const MAILBOX_POLL_TIMEOUT_MS = 2 * 60 * 1_000;
 
 const GENDER_OPTIONS: SelectOption[] = [
   { value: "男", label: "男" },
@@ -367,6 +372,59 @@ function formatScore(score: number | null | undefined): string {
   return typeof score === "number" ? score.toFixed(1) : "-";
 }
 
+interface MailboxScanCallback {
+  taskId: string;
+  email?: string;
+}
+
+function getMailboxScanCallback(): MailboxScanCallback | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const taskId = params.get("taskId")?.trim();
+  if (params.get("mailboxConnected") !== "true" || !taskId) {
+    return null;
+  }
+
+  return {
+    taskId,
+    email: params.get("email")?.trim() || undefined,
+  };
+}
+
+function isMailboxScanInProgress(status: string | undefined): boolean {
+  return status === "pending" || status === "running";
+}
+
+function getMailboxScanStatusLabel(status: string | undefined): string {
+  if (status === "pending") {
+    return "等待扫描";
+  }
+  if (status === "running") {
+    return "扫描中";
+  }
+  if (status === "done") {
+    return "扫描完成";
+  }
+  if (status === "failed") {
+    return "扫描失败";
+  }
+  return status || "-";
+}
+
+function getMailboxScanMessage(task: MailboxScanTask): string {
+  const progress = "已扫描 " + String(task.scanned ?? 0) + " 封，导入 " + String(task.imported ?? 0) + " 份简历，已跳过 " + String(task.skipped ?? 0) + " 封。";
+  if (task.status === "failed") {
+    return "邮箱扫描失败：" + (task.error || "未知错误");
+  }
+  if (task.status === "done") {
+    return "邮箱扫描完成：" + progress;
+  }
+  return "正在扫描邮箱：" + progress;
+}
+
 export default function CandidatesPage() {
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -379,7 +437,15 @@ export default function CandidatesPage() {
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(() => new Set());
   const [batchMessage, setBatchMessage] = useState<string | null>(null);
   const [batchTaskIds, setBatchTaskIds] = useState<string[]>([]);
+  const [mailboxMessage, setMailboxMessage] = useState<string | null>(null);
+  const [mailboxScanTask, setMailboxScanTask] = useState<MailboxScanTask | null>(null);
+  const [mailboxScanError, setMailboxScanError] = useState<string | null>(null);
+  const mailboxScanCallback = getMailboxScanCallback();
   const batchPollRef = useRef({ attempts: 0, dataUpdatedAt: 0 });
+  const mailboxPollTimerRef = useRef<ReturnType<typeof window.setInterval> | undefined>(undefined);
+  const mailboxPollTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | undefined>(undefined);
+  const mailboxPollRunIdRef = useRef(0);
+  const mailboxPollInFlightRef = useRef(false);
 
   const candidatesQuery = useQuery({
     queryKey: ["candidates", { keyword, source, status }],
@@ -442,6 +508,119 @@ export default function CandidatesPage() {
       return batchPollRef.current.attempts >= MAX_POLL_ATTEMPTS ? false : POLL_INTERVAL_MS;
     },
   });
+
+  const googleMailboxOAuthMutation = useMutation({
+    mutationFn: getGoogleMailboxOAuthUrl,
+    onSuccess: (response) => {
+      const url = response.url?.trim();
+      if (!url) {
+        setMailboxMessage("未收到 Google 授权地址，请稍后重试。");
+        return;
+      }
+
+      // The backend owns the OAuth state cookie and URL. Do not append any
+      // frontend credential, token, or state to this navigation.
+      window.location.assign(url);
+    },
+    onError: (error) => setMailboxMessage(getErrorMessage(error, "无法发起 Google 授权，请稍后重试。")),
+  });
+
+  const stopMailboxScanPolling = useCallback(() => {
+    mailboxPollRunIdRef.current += 1;
+    mailboxPollInFlightRef.current = false;
+
+    if (mailboxPollTimerRef.current !== undefined) {
+      window.clearInterval(mailboxPollTimerRef.current);
+      mailboxPollTimerRef.current = undefined;
+    }
+
+    if (mailboxPollTimeoutRef.current !== undefined) {
+      window.clearTimeout(mailboxPollTimeoutRef.current);
+      mailboxPollTimeoutRef.current = undefined;
+    }
+  }, []);
+
+  const startMailboxScanPolling = useCallback(
+    async (taskId: string) => {
+      stopMailboxScanPolling();
+      const pollRunId = mailboxPollRunIdRef.current;
+
+      const poll = async () => {
+        if (pollRunId !== mailboxPollRunIdRef.current || mailboxPollInFlightRef.current) {
+          return;
+        }
+
+        mailboxPollInFlightRef.current = true;
+        try {
+          const task = await getMailboxScan(taskId);
+          if (pollRunId !== mailboxPollRunIdRef.current) {
+            return;
+          }
+
+          setMailboxScanTask(task);
+          setMailboxScanError(null);
+
+          if (task.status === "done") {
+            stopMailboxScanPolling();
+            await queryClient.refetchQueries({ queryKey: ["candidates"] });
+            window.history.replaceState({}, "", "/candidates");
+            return;
+          }
+
+          if (task.status === "failed") {
+            stopMailboxScanPolling();
+            setMailboxScanError(task.error || "邮箱扫描失败。");
+            return;
+          }
+
+          if (!isMailboxScanInProgress(task.status)) {
+            stopMailboxScanPolling();
+            setMailboxScanError("邮箱扫描状态异常：" + (task.status || "未知状态") + "。");
+          }
+        } catch (error) {
+          if (pollRunId !== mailboxPollRunIdRef.current) {
+            return;
+          }
+
+          stopMailboxScanPolling();
+          setMailboxScanError(getErrorMessage(error, "查询扫描状态失败。"));
+        } finally {
+          if (pollRunId === mailboxPollRunIdRef.current) {
+            mailboxPollInFlightRef.current = false;
+          }
+        }
+      };
+
+      mailboxPollTimeoutRef.current = window.setTimeout(() => {
+        if (pollRunId !== mailboxPollRunIdRef.current) {
+          return;
+        }
+
+        stopMailboxScanPolling();
+        setMailboxScanError("邮箱扫描超过 2 分钟，已停止轮询。");
+      }, MAILBOX_POLL_TIMEOUT_MS);
+
+      await poll();
+      if (pollRunId !== mailboxPollRunIdRef.current || mailboxPollTimerRef.current !== undefined) {
+        return;
+      }
+
+      mailboxPollTimerRef.current = window.setInterval(() => {
+        void poll();
+      }, MAILBOX_POLL_INTERVAL_MS);
+    },
+    [stopMailboxScanPolling],
+  );
+
+  const mailboxTaskId = mailboxScanCallback?.taskId;
+  useEffect(() => {
+    if (!mailboxTaskId) {
+      return stopMailboxScanPolling;
+    }
+
+    void startMailboxScanPolling(mailboxTaskId);
+    return stopMailboxScanPolling;
+  }, [mailboxTaskId, startMailboxScanPolling, stopMailboxScanPolling]);
 
   const createCandidateMutation = useMutation({
     mutationFn: createCandidate,
@@ -656,6 +835,11 @@ export default function CandidatesPage() {
     });
   };
 
+  const beginGoogleMailboxOAuth = () => {
+    setMailboxMessage(null);
+    googleMailboxOAuthMutation.mutate();
+  };
+
   return (
     <div className="p-4 md:p-6 lg:p-8">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between md:mb-8">
@@ -701,20 +885,53 @@ export default function CandidatesPage() {
       <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm font-medium text-gray-700">Selected {selectedBatchCount}</div>
-          <button
-            type="button"
-            onClick={submitBatchAnalyze}
-            disabled={batchAnalyzeMutation.isPending || selectedBatchCount === 0}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {batchAnalyzeMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Run Screening
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={submitBatchAnalyze}
+              disabled={batchAnalyzeMutation.isPending || selectedBatchCount === 0}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {batchAnalyzeMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              Run Screening
+            </button>
+            <button
+              type="button"
+              onClick={beginGoogleMailboxOAuth}
+              disabled={googleMailboxOAuthMutation.isPending}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {googleMailboxOAuthMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+              从邮箱拉取候选人信息
+            </button>
+          </div>
         </div>
         {batchMessage && <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">{batchMessage}</div>}
         {activeBatchTaskCount > 0 && (
           <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
             正在轮询 {activeBatchTaskCount} 个筛选任务，完成或失败后会自动停止。
+          </div>
+        )}
+        {mailboxMessage && <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{mailboxMessage}</div>}
+        {mailboxScanCallback && (
+          <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-3">
+            <div className="text-sm font-medium text-sky-900">邮箱扫描{mailboxScanCallback.email ? " · " + mailboxScanCallback.email : ""}</div>
+            {mailboxScanError ? (
+              <div className="mt-1 text-sm text-rose-700">{mailboxScanError}</div>
+            ) : mailboxScanTask ? (
+              <>
+                <div className="mt-1 text-sm text-sky-800">{getMailboxScanMessage(mailboxScanTask)}</div>
+                <div className="mt-1 text-xs text-sky-700">
+                  状态：{getMailboxScanStatusLabel(mailboxScanTask.status)} · 已扫描 {mailboxScanTask.scanned ?? 0} · 已导入 {mailboxScanTask.imported ?? 0} · 已跳过 {mailboxScanTask.skipped ?? 0}
+                </div>
+                {mailboxScanTask.status === "failed" && mailboxScanTask.error && <div className="mt-1 text-xs text-rose-700">错误：{mailboxScanTask.error}</div>}
+              </>
+            ) : (
+              <div className="mt-1 flex items-center gap-2 text-sm text-sky-800">
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+                正在获取邮箱扫描进度…
+              </div>
+            )}
           </div>
         )}
       </section>
