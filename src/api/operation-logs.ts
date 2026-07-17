@@ -22,6 +22,7 @@ export interface ListOperationLogsParams {
   page?: number;
   pageSize?: number;
   user?: string;
+  date?: string;
 }
 
 export type ListOperationLogsResponse = PaginatedResponse<OperationLog>;
@@ -35,6 +36,7 @@ export function listOperationLogs(params: ListOperationLogsParams = {}): Promise
       page,
       pageSize,
       user: params.user,
+      date: params.date,
     },
   }).then((response) => normalizePaginatedResponse(response, { page, pageSize }));
 }

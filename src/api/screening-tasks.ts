@@ -45,10 +45,72 @@ export interface ScreeningRequirement {
   id?: ApiId;
   /** The job requirement being matched. */
   label: string;
+  /** Candidate-side finding for this requirement. */
+  candidateSituation?: string | null;
   status: RequirementMatchStatus;
   /** Optional note explaining the match (e.g. "experience is shallow"). */
   comment?: string | null;
   evidence?: RequirementEvidence[];
+}
+
+export interface ScreeningSummarySection {
+  text?: string | null;
+}
+
+export interface ScreeningCandidateInfoSection {
+  name?: string | null;
+  appliedPosition?: string | null;
+  currentTitle?: string | null;
+  yearsOfExperience?: number | null;
+  highestEducation?: string | null;
+  taskStatus?: ScreeningTaskStatus | null;
+  taskErrorMessage?: string | null;
+}
+
+export interface ScreeningAssessmentSection {
+  score?: number | null;
+  matchLevel?: string | null;
+  recommendation?: string | null;
+}
+
+export interface ScreeningRequirementsComparisonSection {
+  items?: ScreeningRequirement[];
+  matchedItems?: ScreeningRequirement[];
+  attentionItems?: ScreeningRequirement[];
+}
+
+export interface ScreeningCandidateAnalysisSection {
+  strengths?: string[];
+  weaknesses?: string[];
+  risks?: string[];
+  suggestedInterviewQuestions?: string[];
+}
+
+export interface ScreeningFinalRecommendationSection {
+  recommendation?: string | null;
+  text?: string | null;
+}
+
+export interface ScreeningResumeSection {
+  text?: string | null;
+  textAvailable?: boolean;
+  highlightAvailable?: boolean;
+}
+
+export interface ScreeningFallbackSection {
+  markdownReport?: string | null;
+  shouldUseMarkdownFallback?: boolean;
+}
+
+export interface ScreeningTaskDetailSections {
+  summary?: ScreeningSummarySection;
+  candidateInfo?: ScreeningCandidateInfoSection;
+  assessment?: ScreeningAssessmentSection;
+  requirementsComparison?: ScreeningRequirementsComparisonSection;
+  candidateAnalysis?: ScreeningCandidateAnalysisSection;
+  finalRecommendation?: ScreeningFinalRecommendationSection;
+  resume?: ScreeningResumeSection;
+  fallback?: ScreeningFallbackSection;
 }
 
 export interface ScreeningTaskDetail extends ScreeningTask {
@@ -56,6 +118,8 @@ export interface ScreeningTaskDetail extends ScreeningTask {
   resumeText?: string | null;
   /** Structured requirement comparison results. */
   requirements?: ScreeningRequirement[];
+  /** Structured report sections returned by the screening backend. */
+  sections?: ScreeningTaskDetailSections | null;
   email?: string | null;
   phone?: string | null;
   location?: string | null;

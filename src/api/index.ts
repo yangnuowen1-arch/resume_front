@@ -16,6 +16,8 @@ export type {
   UpdateCandidateRequest,
   UpdateCandidateResponse,
 } from "./candidates";
+export { getDashboardSummary } from "./dashboard";
+export type { DashboardSummary } from "./dashboard";
 export { getGoogleMailboxOAuthUrl, getMailboxScan } from "./mailbox";
 export type {
   GoogleMailboxOAuthUrlResponse,

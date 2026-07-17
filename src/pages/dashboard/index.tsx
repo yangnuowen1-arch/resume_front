@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Users, Clock, CheckCircle, XCircle, TrendingUp, Calendar, LoaderCircle } from "lucide-react";
-import { listScreeningTasks, type ScreeningTask } from "../../api";
+import { getDashboardSummary, listScreeningTasks, type ScreeningTask } from "../../api";
 import { isRequestError } from "../../request";
 
 const POLL_INTERVAL_MS = 2_000;
@@ -69,6 +69,11 @@ function formatTaskDate(value?: string): string {
 export default function DashboardPage() {
   const screeningPollRef = useRef({ attempts: 0, dataUpdatedAt: 0 });
 
+  const dashboardSummaryQuery = useQuery({
+    queryKey: ["dashboard", "summary"],
+    queryFn: getDashboardSummary,
+  });
+
   const screeningTasksQuery = useQuery({
     queryKey: ["screening-tasks", "recent"],
     queryFn: () => listScreeningTasks({ page: 1, pageSize: 10, status: "all" }),
@@ -92,11 +97,12 @@ export default function DashboardPage() {
     },
   });
 
+  const summary = dashboardSummaryQuery.data;
   const stats = [
-    { label: "Total Resumes", value: "1,247", change: "+12.5%", trend: "up", icon: Users, color: "blue" },
-    { label: "Pending Screening", value: "38", change: "-5.2%", trend: "down", icon: Clock, color: "yellow" },
-    { label: "Recommended", value: "156", change: "+18.3%", trend: "up", icon: CheckCircle, color: "green" },
-    { label: "Rejected", value: "892", change: "+8.1%", trend: "up", icon: XCircle, color: "red" },
+    { label: "Total Resumes", value: summary?.totalResumes, change: "+12.5%", trend: "up", icon: Users, color: "blue" },
+    { label: "Pending Screening", value: summary?.pendingScreening, change: "-5.2%", trend: "down", icon: Clock, color: "yellow" },
+    { label: "Recommended", value: summary?.recommended, change: "+18.3%", trend: "up", icon: CheckCircle, color: "green" },
+    { label: "Rejected", value: summary?.rejected, change: "+8.1%", trend: "up", icon: XCircle, color: "red" },
   ] as const;
 
   const recentScreenings = screeningTasksQuery.data?.items ?? [];
@@ -147,12 +153,20 @@ export default function DashboardPage() {
                   <span className={stat.trend === "up" ? "text-green-600" : "text-red-600"}>{stat.change}</span>
                 </div>
               </div>
-              <h3 className="mb-1 text-3xl font-semibold text-gray-900">{stat.value}</h3>
+              <h3 className="mb-1 text-3xl font-semibold text-gray-900">
+                {dashboardSummaryQuery.isLoading ? <LoaderCircle className="h-7 w-7 animate-spin" /> : stat.value?.toLocaleString() ?? "-"}
+              </h3>
               <p className="text-sm text-gray-600">{stat.label}</p>
             </div>
           );
         })}
       </div>
+
+      {dashboardSummaryQuery.isError && (
+        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 md:mb-8">
+          {getErrorMessage(dashboardSummaryQuery.error, "Failed to load dashboard summary.")}
+        </div>
+      )}
 
       <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
         <div className="border-b border-gray-200 px-4 py-4 md:px-6">

@@ -117,8 +117,13 @@ function toOptionalNumber(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function idToString(id: ApiId | undefined): string {
-  return id === undefined ? "" : String(id);
+function idToString(id: ApiId | null | undefined): string {
+  if (id === null || id === undefined) {
+    return "";
+  }
+
+  const value = String(id).trim();
+  return value.toLowerCase() === "null" ? "" : value;
 }
 
 function compact(value: string): string | undefined {
