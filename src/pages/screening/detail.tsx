@@ -1,10 +1,18 @@
-import { useMemo, useRef, useState, type RefObject } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject
+} from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
   ArrowLeft,
   BrainCircuit,
+  ExternalLink,
   FileText,
   LoaderCircle,
   Maximize2,
@@ -20,9 +28,52 @@ import {
   type ScreeningTaskDetail
 } from '../../api'
 import { isRequestError } from '../../request'
+import * as pdfjsLib from 'pdfjs-dist'
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 type RequirementStatus = 'pass' | 'partial' | 'miss'
 type MobilePanel = 'resume' | 'report'
+type PdfStatus = 'loading' | 'ready' | 'error'
+
+type TextRange = {
+  start: number
+  end: number
+}
+
+type EvidenceTarget = {
+  requirementKey: string
+  evidenceIndex: number
+  status: RequirementStatus
+  text: string
+}
+
+type EvidenceMatchSummary = {
+  totalEvidenceCount: number
+  matchedEvidenceCount: number
+  unmatchedEvidenceCount: number
+  matchedRequirementKeys: ReadonlySet<string>
+  isComplete: boolean
+  documentUrl: string | null
+}
+
+type PdfFocusRequest = {
+  requirementKey: string
+  requestId: number
+  documentUrl: string
+}
+
+type IndexedTextSpan = TextRange & {
+  element: HTMLSpanElement
+}
+
+type PdfPageTextIndex = {
+  pageNumber: number
+  text: string
+  spans: IndexedTextSpan[]
+}
 
 type StatusStyle = {
   label: string
@@ -58,6 +109,8 @@ const STATUS_STYLES: Record<RequirementStatus, StatusStyle> = {
 
 const EMPTY_REQUIREMENTS: ScreeningRequirement[] = []
 const EMPTY_TEXT_ITEMS: string[] = []
+const PDF_RENDER_SCALE = 1.15
+const MAX_CANVAS_PIXEL_RATIO = 2
 
 function normalizeStatus(
   status: RequirementMatchStatus | undefined
@@ -155,54 +208,192 @@ type Segment = {
   anchorId?: string
 }
 
+type TextResumeBuildResult = {
+  segments: Segment[]
+  evidenceSummary: EvidenceMatchSummary
+}
+
+type NormalizedText = {
+  text: string
+  sourceRanges: TextRange[]
+}
+
+function createEvidenceMatchSummary(
+  evidenceTargets: EvidenceTarget[],
+  matchedTargetIndexes: ReadonlySet<number> = new Set<number>(),
+  isComplete = true,
+  documentUrl: string | null = null
+): EvidenceMatchSummary {
+  const matchedRequirementKeys = new Set<string>()
+
+  matchedTargetIndexes.forEach((targetIndex) => {
+    const target = evidenceTargets[targetIndex]
+    if (target) {
+      matchedRequirementKeys.add(target.requirementKey)
+    }
+  })
+
+  return {
+    totalEvidenceCount: evidenceTargets.length,
+    matchedEvidenceCount: matchedTargetIndexes.size,
+    unmatchedEvidenceCount: isComplete
+      ? evidenceTargets.length - matchedTargetIndexes.size
+      : 0,
+    matchedRequirementKeys,
+    isComplete,
+    documentUrl
+  }
+}
+
+function collectEvidenceTargets(
+  requirements: ScreeningRequirement[]
+): EvidenceTarget[] {
+  const evidenceTargets: EvidenceTarget[] = []
+
+  requirements.forEach((requirement, requirementIndex) => {
+    const requirementKey = getRequirementKey(requirement, requirementIndex)
+    const status = normalizeStatus(requirement.status)
+
+    ;(requirement.evidence ?? []).forEach((evidence, evidenceIndex) => {
+      const text = typeof evidence.text === 'string' ? evidence.text : ''
+
+      evidenceTargets.push({
+        requirementKey,
+        evidenceIndex,
+        status,
+        text
+      })
+    })
+  })
+
+  return evidenceTargets
+}
+
+function isNormalizableWhitespace(character: string): boolean {
+  return (
+    character === ' ' ||
+    character === '\n' ||
+    character === '\r' ||
+    character === '\u00a0'
+  )
+}
+
+function normalizeWhitespaceForSearch(value: string): NormalizedText {
+  const characters: string[] = []
+  const sourceRanges: TextRange[] = []
+  let index = 0
+
+  while (index < value.length) {
+    const start = index
+    const character = value[index]
+
+    if (isNormalizableWhitespace(character)) {
+      while (
+        index < value.length &&
+        isNormalizableWhitespace(value[index])
+      ) {
+        index += 1
+      }
+      characters.push(' ')
+      sourceRanges.push({ start, end: index })
+      continue
+    }
+
+    characters.push(character)
+    sourceRanges.push({ start, end: start + 1 })
+    index += 1
+  }
+
+  return {
+    text: characters.join(''),
+    sourceRanges
+  }
+}
+
 /**
- * Splits the resume into text and evidence spans. Explicit offsets are preferred;
- * otherwise the first exact occurrence of evidence text is used.
+ * Finds an evidence snippet without changing punctuation or attempting a fuzzy
+ * match. The fallback only normalizes spaces, line breaks, and NBSPs.
+ */
+function findEvidenceRange(
+  sourceText: string,
+  evidenceText: string
+): TextRange | null {
+  if (!sourceText || !evidenceText) {
+    return null
+  }
+
+  const exactStart = sourceText.indexOf(evidenceText)
+  if (exactStart >= 0) {
+    return {
+      start: exactStart,
+      end: exactStart + evidenceText.length
+    }
+  }
+
+  const normalizedSource = normalizeWhitespaceForSearch(sourceText)
+  const normalizedEvidence = normalizeWhitespaceForSearch(evidenceText)
+  if (!normalizedEvidence.text) {
+    return null
+  }
+
+  const normalizedStart = normalizedSource.text.indexOf(normalizedEvidence.text)
+  if (normalizedStart < 0) {
+    return null
+  }
+
+  const normalizedEnd = normalizedStart + normalizedEvidence.text.length
+  return {
+    start: normalizedSource.sourceRanges[normalizedStart].start,
+    end: normalizedSource.sourceRanges[normalizedEnd - 1].end
+  }
+}
+
+/**
+ * Splits the text preview into normal text and matched evidence spans. The API no
+ * longer supplies offsets, so evidence.text is the sole source of positions.
  */
 function buildSegments(
   resumeText: string,
   requirements: ScreeningRequirement[]
-): Segment[] {
+): TextResumeBuildResult {
   type Mark = {
     start: number
     end: number
     reqKey: string
     status: RequirementStatus
+    targetIndex: number
   }
 
+  const evidenceTargets = collectEvidenceTargets(requirements)
   const marks: Mark[] = []
 
-  requirements.forEach((requirement, index) => {
-    const reqKey = getRequirementKey(requirement, index)
-    const status = normalizeStatus(requirement.status)
-
-    ;(requirement.evidence ?? []).forEach((evidence) => {
-      const snippet = evidence.text?.trim()
-      let start = typeof evidence.start === 'number' ? evidence.start : -1
-      let end = typeof evidence.end === 'number' ? evidence.end : -1
-
-      if ((start < 0 || end <= start) && snippet) {
-        const found = resumeText.indexOf(snippet)
-        if (found >= 0) {
-          start = found
-          end = found + snippet.length
-        }
-      }
-
-      if (start >= 0 && end > start && end <= resumeText.length) {
-        marks.push({ start, end, reqKey, status })
-      }
-    })
+  evidenceTargets.forEach((target, targetIndex) => {
+    const range = findEvidenceRange(resumeText, target.text)
+    if (range) {
+      marks.push({
+        ...range,
+        reqKey: target.requirementKey,
+        status: target.status,
+        targetIndex
+      })
+    }
   })
 
   if (marks.length === 0) {
-    return [{ text: resumeText, reqKey: null, status: null }]
+    return {
+      segments: [{ text: resumeText, reqKey: null, status: null }],
+      evidenceSummary: createEvidenceMatchSummary(
+        evidenceTargets,
+        new Set<number>()
+      )
+    }
   }
 
-  marks.sort((a, b) => a.start - b.start)
+  marks.sort((a, b) => a.start - b.start || b.end - a.end)
 
   const segments: Segment[] = []
   const anchoredRequirements = new Set<string>()
+  const matchedTargetIndexes = new Set<number>()
   let cursor = 0
 
   for (const mark of marks) {
@@ -227,6 +418,7 @@ function buildSegments(
       status: mark.status,
       anchorId
     })
+    matchedTargetIndexes.add(mark.targetIndex)
     cursor = mark.end
   }
 
@@ -238,7 +430,13 @@ function buildSegments(
     })
   }
 
-  return segments
+  return {
+    segments,
+    evidenceSummary: createEvidenceMatchSummary(
+      evidenceTargets,
+      matchedTargetIndexes
+    )
+  }
 }
 
 function getRequirementDetail(requirement: ScreeningRequirement): string {
@@ -273,6 +471,45 @@ function formatYearsOfExperience(
   return `${years} 年`
 }
 
+function isPdfResumeFile(
+  url: string | null,
+  fileType: string | null | undefined,
+  filename: string | null | undefined,
+  allowLegacyUrlFallback: boolean
+): boolean {
+  if (!url) {
+    return false
+  }
+
+  const normalizedFileType = fileType?.trim().toLowerCase() ?? ''
+  if (normalizedFileType.includes('pdf')) {
+    return true
+  }
+
+  const hasPdfExtension = (value: string | null | undefined) =>
+    /\.pdf(?:$|[?#])/i.test(value ?? '')
+
+  if (hasPdfExtension(filename) || hasPdfExtension(url)) {
+    return true
+  }
+
+  // Older top-level responses have no file metadata at all. Keep their prior
+  // PDF-preview behavior, but do not mistake a new section's signed DOCX URL
+  // (often application/octet-stream) for a PDF.
+  return allowLegacyUrlFallback && normalizedFileType.length === 0
+}
+
+function getPdfErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return 'PDF 加载失败，请稍后重试。'
+}
+
+function isRenderingCancelled(error: unknown): boolean {
+  return error instanceof pdfjsLib.RenderingCancelledException
+}
+
 export default function ScreeningDetailPage() {
   const { id } = useParams()
 
@@ -289,6 +526,12 @@ function ScreeningDetailWorkspace({ id }: { id: string | undefined }) {
   const [activeReqKey, setActiveReqKey] = useState<string | null>(null)
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>('resume')
   const [zoom, setZoom] = useState(1)
+  const [pdfEvidenceSummary, setPdfEvidenceSummary] =
+    useState<EvidenceMatchSummary>(() =>
+      createEvidenceMatchSummary([], new Set<number>(), false)
+    )
+  const [pdfFocusRequest, setPdfFocusRequest] =
+    useState<PdfFocusRequest | null>(null)
 
   const detailQuery = useQuery({
     queryKey: ['screening-task', id],
@@ -306,7 +549,27 @@ function ScreeningDetailWorkspace({ id }: { id: string | undefined }) {
   const fallback = sections?.fallback
   const requirements =
     requirementsComparison?.items ?? detail?.requirements ?? EMPTY_REQUIREMENTS
-  const resumeText = sections?.resume?.text ?? detail?.resumeText ?? ''
+  const resumeSection = sections?.resume
+  const resumeText = resumeSection?.text ?? detail?.resumeText ?? ''
+  const resumeUrl =
+    resumeSection?.previewUrl?.trim() ||
+    resumeSection?.fileUrl?.trim() ||
+    detail?.resumePreviewUrl?.trim() ||
+    detail?.resumeFileUrl?.trim() ||
+    null
+  const hasResumeSectionFileMetadata = Boolean(
+    resumeSection?.previewUrl ||
+      resumeSection?.fileUrl ||
+      resumeSection?.filename ||
+      resumeSection?.fileType
+  )
+  const isPdfResume = isPdfResumeFile(
+    resumeUrl,
+    resumeSection?.fileType,
+    resumeSection?.filename,
+    !hasResumeSectionFileMetadata
+  )
+  const pdfUrl = isPdfResume ? resumeUrl : null
   const summaryText = sections?.summary?.text ?? detail?.summary
   const recommendation =
     finalRecommendation?.recommendation ??
@@ -323,30 +586,54 @@ function ScreeningDetailWorkspace({ id }: { id: string | undefined }) {
     fallback?.shouldUseMarkdownFallback ??
     (Boolean(markdownReport) && requirements.length === 0)
 
-  const segments = useMemo(
-    () => (resumeText.trim() ? buildSegments(resumeText, requirements) : []),
+  const textResumeResult = useMemo(
+    () => {
+      if (resumeText.trim()) {
+        return buildSegments(resumeText, requirements)
+      }
+
+      return {
+        segments: [],
+        evidenceSummary: createEvidenceMatchSummary(
+          collectEvidenceTargets(requirements),
+          new Set<number>()
+        )
+      }
+    },
     [resumeText, requirements]
   )
+  const segments = textResumeResult.segments
+  const pdfEvidenceTargets = useMemo(
+    () => collectEvidenceTargets(requirements),
+    [requirements]
+  )
+  const pendingPdfEvidenceSummary = useMemo(
+    () =>
+      createEvidenceMatchSummary(
+        pdfEvidenceTargets,
+        new Set<number>(),
+        false,
+        pdfUrl
+      ),
+    [pdfEvidenceTargets, pdfUrl]
+  )
+
+  const handlePdfEvidenceSummaryChange = useCallback(
+    (summary: EvidenceMatchSummary) => {
+      setPdfEvidenceSummary(summary)
+    },
+    []
+  )
+
+  const evidenceSummary = isPdfResume
+    ? pdfEvidenceSummary.documentUrl === pdfUrl
+      ? pdfEvidenceSummary
+      : pendingPdfEvidenceSummary
+    : textResumeResult.evidenceSummary
 
   const resolvedRequirementKeys = useMemo(() => {
-    const keys = new Set<string>()
-    segments.forEach((segment) => {
-      if (segment.reqKey && segment.anchorId) {
-        keys.add(segment.reqKey)
-      }
-    })
-    return keys
-  }, [segments])
-
-  const evidenceCount = useMemo(
-    () =>
-      segments.reduce(
-        (count, segment) =>
-          segment.reqKey && segment.status ? count + 1 : count,
-        0
-      ),
-    [segments]
-  )
+    return new Set(evidenceSummary.matchedRequirementKeys)
+  }, [evidenceSummary])
 
   const matchingRequirements = useMemo(
     () => {
@@ -372,17 +659,27 @@ function ScreeningDetailWorkspace({ id }: { id: string | undefined }) {
     [requirements, requirementsComparison]
   )
 
-  const focusRequirement = (reqKey: string) => {
+  const focusRequirement = useCallback((reqKey: string) => {
     setActiveReqKey(reqKey)
     setMobilePanel('resume')
+
+    if (isPdfResume) {
+      setPdfFocusRequest((current) => ({
+        requirementKey: reqKey,
+        requestId: (current?.requestId ?? 0) + 1,
+        documentUrl: pdfUrl ?? ''
+      }))
+      return
+    }
+
     window.setTimeout(() => {
       document
         .getElementById(`evidence-${reqKey}`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 0)
-  }
+  }, [isPdfResume, pdfUrl])
 
-  const handleEvidenceClick = (reqKey: string) => {
+  const handleEvidenceClick = useCallback((reqKey: string) => {
     setActiveReqKey(reqKey)
     setMobilePanel('report')
     window.setTimeout(() => {
@@ -390,7 +687,7 @@ function ScreeningDetailWorkspace({ id }: { id: string | undefined }) {
         .getElementById(`requirement-${reqKey}`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 0)
-  }
+  }, [])
 
   const adjustZoom = (change: number) => {
     setZoom((value) => Math.min(1.4, Math.max(0.65, value + change)))
@@ -548,15 +845,21 @@ function ScreeningDetailWorkspace({ id }: { id: string | undefined }) {
           email={detail.email}
           phone={detail.phone}
           location={detail.location}
+          pdfUrl={pdfUrl}
+          requirements={requirements}
           segments={segments}
           hasResume={resumeText.trim().length > 0}
-          evidenceCount={evidenceCount}
+          evidenceSummary={evidenceSummary}
           activeReqKey={activeReqKey}
+          pdfFocusRequest={
+            pdfFocusRequest?.documentUrl === pdfUrl ? pdfFocusRequest : null
+          }
           zoom={zoom}
           onAdjustZoom={adjustZoom}
           onResetZoom={() => setZoom(1)}
           onToggleFullscreen={toggleFullscreen}
           onEvidenceClick={handleEvidenceClick}
+          onPdfEvidenceSummaryChange={handlePdfEvidenceSummaryChange}
         />
         <ReportPanel
           visibleOnMobile={mobilePanel === 'report'}
@@ -601,15 +904,19 @@ const ResumeViewer = ({
   email,
   phone,
   location,
+  pdfUrl,
+  requirements,
   segments,
   hasResume,
-  evidenceCount,
+  evidenceSummary,
   activeReqKey,
+  pdfFocusRequest,
   zoom,
   onAdjustZoom,
   onResetZoom,
   onToggleFullscreen,
-  onEvidenceClick
+  onEvidenceClick,
+  onPdfEvidenceSummaryChange
 }: {
   panelRef: RefObject<HTMLElement | null>
   visibleOnMobile: boolean
@@ -618,15 +925,19 @@ const ResumeViewer = ({
   email: string | null | undefined
   phone: string | null | undefined
   location: string | null | undefined
+  pdfUrl: string | null
+  requirements: ScreeningRequirement[]
   segments: Segment[]
   hasResume: boolean
-  evidenceCount: number
+  evidenceSummary: EvidenceMatchSummary
   activeReqKey: string | null
+  pdfFocusRequest: PdfFocusRequest | null
   zoom: number
   onAdjustZoom: (change: number) => void
   onResetZoom: () => void
   onToggleFullscreen: () => void
   onEvidenceClick: (reqKey: string) => void
+  onPdfEvidenceSummaryChange: (summary: EvidenceMatchSummary) => void
 }) => {
   return (
     <section
@@ -637,11 +948,16 @@ const ResumeViewer = ({
         <div className='flex items-center gap-2'>
           <span className='font-semibold text-slate-700'>简历原文</span>
           <span className='rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-500'>
-            文本预览
+            {pdfUrl ? 'PDF 预览' : '文本预览'}
           </span>
-          {evidenceCount > 0 && (
+          {evidenceSummary.totalEvidenceCount > 0 && (
             <span className='hidden text-slate-400 sm:inline'>
-              已标注 {evidenceCount} 处证据
+              {pdfUrl && !evidenceSummary.isComplete
+                ? '正在建立文本索引…'
+                : `已标注 ${evidenceSummary.matchedEvidenceCount} 处证据`}
+              {evidenceSummary.isComplete &&
+                evidenceSummary.unmatchedEvidenceCount > 0 &&
+                `，${evidenceSummary.unmatchedEvidenceCount} 处未定位`}
             </span>
           )}
         </div>
@@ -690,30 +1006,44 @@ const ResumeViewer = ({
         </div>
       </div>
 
-      <div className='flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-slate-200 bg-white px-4 py-2 text-[11px] text-slate-500'>
-        <span>原文标注：</span>
-        <LegendItem
-          className='bg-emerald-100 shadow-[inset_0_-2px_0_#22c55e]'
-          label='匹配'
-        />
-        <LegendItem
-          className='bg-amber-100 shadow-[inset_0_-2px_0_#eab308]'
-          label='部分匹配'
-        />
-        <LegendItem
-          className='bg-rose-100 shadow-[inset_0_-2px_0_#ef4444]'
-          label='未匹配'
-        />
-      </div>
+      {!pdfUrl && (
+        <div className='flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-slate-200 bg-white px-4 py-2 text-[11px] text-slate-500'>
+          <span>原文标注：</span>
+          <LegendItem
+            className='bg-emerald-100 shadow-[inset_0_-2px_0_#22c55e]'
+            label='匹配'
+          />
+          <LegendItem
+            className='bg-amber-100 shadow-[inset_0_-2px_0_#eab308]'
+            label='部分匹配'
+          />
+          <LegendItem
+            className='bg-rose-100 shadow-[inset_0_-2px_0_#ef4444]'
+            label='未匹配'
+          />
+        </div>
+      )}
 
       <div className='flex-1 overflow-auto p-4 lg:p-6'>
-        <article
-          style={{
-            transform: `scale(${zoom})`,
-            transformOrigin: 'top center'
-          }}
-          className='mx-auto min-h-[42rem] w-full max-w-2xl rounded-sm border border-slate-300 bg-white p-6 text-slate-800 shadow-lg transition-transform duration-200 sm:p-8'
-        >
+        {pdfUrl ? (
+          <PdfResumeDocument
+            key={pdfUrl}
+            url={pdfUrl}
+            zoom={zoom}
+            requirements={requirements}
+            activeReqKey={activeReqKey}
+            focusRequest={pdfFocusRequest}
+            onEvidenceClick={onEvidenceClick}
+            onMatchSummaryChange={onPdfEvidenceSummaryChange}
+          />
+        ) : (
+          <article
+            style={{
+              transform: `scale(${zoom})`,
+              transformOrigin: 'top center'
+            }}
+            className='mx-auto min-h-[42rem] w-full max-w-2xl rounded-sm border border-slate-300 bg-white p-6 text-slate-800 shadow-lg transition-transform duration-200 sm:p-8'
+          >
           <div className='mb-5 border-b-2 border-indigo-600 pb-5'>
             <div className='flex flex-col justify-between gap-3 sm:flex-row sm:items-start'>
               <div>
@@ -780,9 +1110,593 @@ const ResumeViewer = ({
               </p>
             </div>
           )}
-        </article>
+          </article>
+        )}
       </div>
     </section>
+  )
+}
+
+function buildPdfPageTextIndex(
+  pageNumber: number,
+  textLayerElement: HTMLDivElement
+): PdfPageTextIndex {
+  const spans: IndexedTextSpan[] = []
+  let text = ''
+
+  // TextLayer emits text spans and line-break <br>s as direct children when
+  // marked content is disabled. Keeping line breaks lets the whitespace-only
+  // fallback match snippets that cross visual lines.
+  Array.from(textLayerElement.children).forEach((element) => {
+    if (element instanceof HTMLSpanElement) {
+      const spanText = element.textContent ?? ''
+      const start = text.length
+      text += spanText
+      spans.push({ element, start, end: text.length })
+      return
+    }
+
+    if (element instanceof HTMLBRElement) {
+      text += '\n'
+    }
+  })
+
+  return { pageNumber, text, spans }
+}
+
+function getSpansForRange(
+  pageTextIndex: PdfPageTextIndex,
+  range: TextRange
+): HTMLSpanElement[] {
+  return pageTextIndex.spans
+    .filter((span) => span.start < range.end && span.end > range.start)
+    .map((span) => span.element)
+}
+
+function updatePdfEvidenceActiveState(
+  spanRequirementKeys: ReadonlyMap<HTMLSpanElement, ReadonlySet<string>>,
+  activeReqKey: string | null
+) {
+  spanRequirementKeys.forEach((requirementKeys, span) => {
+    span.classList.toggle(
+      'pdf-evidence-active',
+      Boolean(activeReqKey && requirementKeys.has(activeReqKey))
+    )
+  })
+}
+
+function PdfResumeDocument({
+  url,
+  zoom,
+  requirements,
+  activeReqKey,
+  focusRequest,
+  onEvidenceClick,
+  onMatchSummaryChange
+}: {
+  url: string
+  zoom: number
+  requirements: ScreeningRequirement[]
+  activeReqKey: string | null
+  focusRequest: PdfFocusRequest | null
+  onEvidenceClick: (reqKey: string) => void
+  onMatchSummaryChange: (summary: EvidenceMatchSummary) => void
+}) {
+  const pdfRef = useRef<PDFDocumentProxy | null>(null)
+  const pageRefs = useRef(new Map<number, HTMLDivElement>())
+  const canvasRefs = useRef(new Map<number, HTMLCanvasElement>())
+  const textLayerRefs = useRef(new Map<number, HTMLDivElement>())
+  const pageTextIndexesRef = useRef(new Map<number, PdfPageTextIndex>())
+  const spanRequirementKeysRef = useRef(
+    new Map<HTMLSpanElement, Set<string>>()
+  )
+  const requirementHitSpansRef = useRef(
+    new Map<string, Set<HTMLSpanElement>>()
+  )
+  const interactionCleanupRef = useRef<Array<() => void>>([])
+  const activeReqKeyRef = useRef(activeReqKey)
+  const requirementsRef = useRef(requirements)
+  const onEvidenceClickRef = useRef(onEvidenceClick)
+  const onMatchSummaryChangeRef = useRef(onMatchSummaryChange)
+  const [status, setStatus] = useState<PdfStatus>('loading')
+  const [message, setMessage] = useState<string | null>(null)
+  const [pageNumbers, setPageNumbers] = useState<number[]>([])
+  const [isRendering, setIsRendering] = useState(false)
+  const [textIndexVersion, setTextIndexVersion] = useState(0)
+
+  const clearTextLayerState = useCallback(() => {
+    interactionCleanupRef.current.forEach((cleanup) => cleanup())
+    interactionCleanupRef.current = []
+    pageTextIndexesRef.current.clear()
+    spanRequirementKeysRef.current.clear()
+    requirementHitSpansRef.current.clear()
+
+    textLayerRefs.current.forEach((textLayerElement) => {
+      textLayerElement.replaceChildren()
+    })
+  }, [])
+
+  useEffect(() => {
+    requirementsRef.current = requirements
+  }, [requirements])
+
+  useEffect(() => {
+    onEvidenceClickRef.current = onEvidenceClick
+  }, [onEvidenceClick])
+
+  useEffect(() => {
+    onMatchSummaryChangeRef.current = onMatchSummaryChange
+  }, [onMatchSummaryChange])
+
+  useEffect(() => {
+    activeReqKeyRef.current = activeReqKey
+    updatePdfEvidenceActiveState(
+      spanRequirementKeysRef.current,
+      activeReqKey
+    )
+  }, [activeReqKey])
+
+  useEffect(() => {
+    let isCancelled = false
+    let loadedPdf: PDFDocumentProxy | null = null
+
+    canvasRefs.current.clear()
+    pageRefs.current.clear()
+    clearTextLayerState()
+
+    const loadingTask = pdfjsLib.getDocument({
+      url,
+      withCredentials: false
+    })
+
+    void loadingTask.promise
+      .then((pdf) => {
+        if (isCancelled) {
+          void pdf.destroy()
+          return
+        }
+
+        loadedPdf = pdf
+        pdfRef.current = pdf
+        setPageNumbers(
+          Array.from({ length: pdf.numPages }, (_, index) => index + 1)
+        )
+        setStatus('ready')
+      })
+      .catch((error: unknown) => {
+        if (!isCancelled) {
+          setStatus('error')
+          setMessage(getPdfErrorMessage(error))
+          onMatchSummaryChangeRef.current(
+            createEvidenceMatchSummary(
+              collectEvidenceTargets(requirementsRef.current),
+              new Set<number>(),
+              true,
+              url
+            )
+          )
+        }
+      })
+
+    return () => {
+      isCancelled = true
+      pdfRef.current = null
+
+      if (loadedPdf) {
+        void loadedPdf.destroy()
+        return
+      }
+
+      void loadingTask.destroy()
+    }
+  }, [clearTextLayerState, url])
+
+  useEffect(() => {
+    const pdf = pdfRef.current
+    if (status !== 'ready' || !pdf || pageNumbers.length === 0) {
+      return
+    }
+
+    const activePdf = pdf
+    const evidenceTargets = collectEvidenceTargets(requirements)
+    let isCancelled = false
+    const renderTasks: RenderTask[] = []
+    const textLayers: pdfjsLib.TextLayer[] = []
+
+    clearTextLayerState()
+    onMatchSummaryChangeRef.current(
+      createEvidenceMatchSummary(
+        evidenceTargets,
+        new Set<number>(),
+        false,
+        url
+      )
+    )
+
+    const selectEvidenceFromSpan = (span: HTMLSpanElement) => {
+      const requirementKeys = spanRequirementKeysRef.current.get(span)
+      if (!requirementKeys || requirementKeys.size === 0) {
+        return
+      }
+
+      const activeRequirementKey = activeReqKeyRef.current
+      const requirementKey =
+        activeRequirementKey && requirementKeys.has(activeRequirementKey)
+          ? activeRequirementKey
+          : requirementKeys.values().next().value
+
+      if (requirementKey) {
+        onEvidenceClickRef.current(requirementKey)
+      }
+    }
+
+    const bindEvidenceInteractions = () => {
+      textLayerRefs.current.forEach((textLayerElement) => {
+        const getEvidenceSpan = (target: EventTarget | null) => {
+          if (!(target instanceof Element)) {
+            return null
+          }
+
+          const span = target.closest<HTMLSpanElement>(
+            '.pdf-evidence-highlight'
+          )
+          return span && textLayerElement.contains(span) ? span : null
+        }
+        const handleClick = (event: MouseEvent) => {
+          const span = getEvidenceSpan(event.target)
+          if (span) {
+            selectEvidenceFromSpan(span)
+          }
+        }
+        const handleKeyDown = (event: KeyboardEvent) => {
+          if (event.key !== 'Enter' && event.key !== ' ') {
+            return
+          }
+
+          const span = getEvidenceSpan(event.target)
+          if (span) {
+            event.preventDefault()
+            selectEvidenceFromSpan(span)
+          }
+        }
+
+        textLayerElement.addEventListener('click', handleClick)
+        textLayerElement.addEventListener('keydown', handleKeyDown)
+        interactionCleanupRef.current.push(() => {
+          textLayerElement.removeEventListener('click', handleClick)
+          textLayerElement.removeEventListener('keydown', handleKeyDown)
+        })
+      })
+    }
+
+    const applyPdfEvidenceHighlights = (): EvidenceMatchSummary => {
+      const matchedTargetIndexes = new Set<number>()
+      const spanStatuses = new Map<HTMLSpanElement, Set<RequirementStatus>>()
+      const pageTextIndexes = Array.from(
+        pageTextIndexesRef.current.values()
+      ).sort((a, b) => a.pageNumber - b.pageNumber)
+
+      evidenceTargets.forEach((target, targetIndex) => {
+        for (const pageTextIndex of pageTextIndexes) {
+          const range = findEvidenceRange(pageTextIndex.text, target.text)
+          if (!range) {
+            continue
+          }
+
+          const matchingSpans = getSpansForRange(pageTextIndex, range)
+          if (matchingSpans.length === 0) {
+            continue
+          }
+
+          matchedTargetIndexes.add(targetIndex)
+          matchingSpans.forEach((span) => {
+            const requirementKeys =
+              spanRequirementKeysRef.current.get(span) ?? new Set<string>()
+            requirementKeys.add(target.requirementKey)
+            spanRequirementKeysRef.current.set(span, requirementKeys)
+
+            const statuses =
+              spanStatuses.get(span) ?? new Set<RequirementStatus>()
+            statuses.add(target.status)
+            spanStatuses.set(span, statuses)
+
+            const requirementHits =
+              requirementHitSpansRef.current.get(target.requirementKey) ??
+              new Set<HTMLSpanElement>()
+            requirementHits.add(span)
+            requirementHitSpansRef.current.set(
+              target.requirementKey,
+              requirementHits
+            )
+          })
+          break
+        }
+      })
+
+      spanRequirementKeysRef.current.forEach((requirementKeys, span) => {
+        span.classList.add('pdf-evidence-highlight')
+        spanStatuses.get(span)?.forEach((status) => {
+          span.classList.add(`pdf-evidence-${status}`)
+        })
+        span.dataset.requirementKeys = Array.from(requirementKeys).join(',')
+        span.setAttribute('role', 'button')
+        span.tabIndex = 0
+        span.title = '点击查看对应的岗位要求'
+      })
+
+      updatePdfEvidenceActiveState(
+        spanRequirementKeysRef.current,
+        activeReqKeyRef.current
+      )
+      return createEvidenceMatchSummary(
+        evidenceTargets,
+        matchedTargetIndexes,
+        true,
+        url
+      )
+    }
+
+    async function renderPages() {
+      setIsRendering(true)
+      setMessage(null)
+
+      try {
+        for (const pageNumber of pageNumbers) {
+          if (isCancelled) {
+            return
+          }
+
+          const canvas = canvasRefs.current.get(pageNumber)
+          const pageElement = pageRefs.current.get(pageNumber)
+          const textLayerElement = textLayerRefs.current.get(pageNumber)
+          if (!canvas || !pageElement || !textLayerElement) {
+            continue
+          }
+
+          const page = await activePdf.getPage(pageNumber)
+          if (isCancelled) {
+            return
+          }
+
+          const viewport = page.getViewport({
+            scale: PDF_RENDER_SCALE * zoom
+          })
+          const pixelRatio = Math.min(
+            window.devicePixelRatio || 1,
+            MAX_CANVAS_PIXEL_RATIO
+          )
+          const context = canvas.getContext('2d')
+
+          if (!context) {
+            throw new Error('无法创建 PDF 渲染画布。')
+          }
+
+          pageElement.style.width = `${viewport.width}px`
+          pageElement.style.height = `${viewport.height}px`
+          pageElement.style.setProperty('--scale-factor', String(viewport.scale))
+          pageElement.style.setProperty('--user-unit', String(viewport.userUnit))
+          pageElement.style.setProperty('--scale-round-x', '1px')
+          pageElement.style.setProperty('--scale-round-y', '1px')
+          pageElement.style.setProperty(
+            '--total-scale-factor',
+            String(viewport.scale * viewport.userUnit)
+          )
+          canvas.width = Math.floor(viewport.width * pixelRatio)
+          canvas.height = Math.floor(viewport.height * pixelRatio)
+          canvas.style.width = `${viewport.width}px`
+          canvas.style.height = `${viewport.height}px`
+          context.setTransform(1, 0, 0, 1, 0, 0)
+          context.clearRect(0, 0, canvas.width, canvas.height)
+          textLayerElement.replaceChildren()
+
+          const renderTask = page.render({
+            canvas: null,
+            canvasContext: context,
+            viewport,
+            transform:
+              pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0]
+          })
+
+          renderTasks.push(renderTask)
+          await renderTask.promise
+
+          if (isCancelled) {
+            return
+          }
+
+          try {
+            const textContent = await page.getTextContent({
+              disableNormalization: true
+            })
+            if (isCancelled) {
+              return
+            }
+
+            const textLayer = new pdfjsLib.TextLayer({
+              textContentSource: textContent,
+              container: textLayerElement,
+              viewport
+            })
+            textLayers.push(textLayer)
+            await textLayer.render()
+
+            if (isCancelled) {
+              return
+            }
+
+            pageTextIndexesRef.current.set(
+              pageNumber,
+              buildPdfPageTextIndex(pageNumber, textLayerElement)
+            )
+          } catch {
+            if (isCancelled) {
+              return
+            }
+
+            // Text extraction failure means the evidence remains unmatched;
+            // the already-rendered canvas should stay available.
+            textLayerElement.replaceChildren()
+          }
+        }
+
+        if (isCancelled) {
+          return
+        }
+
+        const evidenceSummary = applyPdfEvidenceHighlights()
+        bindEvidenceInteractions()
+        onMatchSummaryChangeRef.current(evidenceSummary)
+        setTextIndexVersion((version) => version + 1)
+      } catch (error) {
+        if (!isCancelled && !isRenderingCancelled(error)) {
+          setStatus('error')
+          setMessage(getPdfErrorMessage(error))
+          onMatchSummaryChangeRef.current(
+            createEvidenceMatchSummary(
+              evidenceTargets,
+              new Set<number>(),
+              true,
+              url
+            )
+          )
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsRendering(false)
+        }
+      }
+    }
+
+    void renderPages()
+
+    return () => {
+      isCancelled = true
+      renderTasks.forEach((task) => {
+        try {
+          task.cancel()
+        } catch {
+          // Ignore cancellation races between React cleanup and pdf.js render.
+        }
+      })
+      textLayers.forEach((textLayer) => textLayer.cancel())
+      clearTextLayerState()
+    }
+  }, [clearTextLayerState, pageNumbers, requirements, status, url, zoom])
+
+  useEffect(() => {
+    if (!focusRequest) {
+      return
+    }
+
+    const firstHit = requirementHitSpansRef.current
+      .get(focusRequest.requirementKey)
+      ?.values()
+      .next().value
+    if (!firstHit) {
+      return
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      firstHit.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+        inline: 'center'
+      })
+    })
+
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [focusRequest, textIndexVersion])
+
+  if (status === 'error') {
+    return (
+      <div className='mx-auto flex min-h-[28rem] w-full max-w-2xl flex-col items-center justify-center rounded-sm border border-rose-200 bg-white p-8 text-center shadow-lg'>
+        <AlertTriangle className='h-10 w-10 text-rose-400' />
+        <p className='mt-3 text-sm font-semibold text-slate-700'>
+          PDF 预览加载失败
+        </p>
+        <p className='mt-1 max-w-sm text-xs leading-5 text-slate-500'>
+          {message || '当前简历文件无法预览。'}
+        </p>
+        <a
+          href={url}
+          target='_blank'
+          rel='noreferrer'
+          className='mt-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50'
+        >
+          <ExternalLink className='h-3.5 w-3.5' />
+          打开原文件
+        </a>
+      </div>
+    )
+  }
+
+  return (
+    <div className='mx-auto flex w-full max-w-3xl flex-col items-center gap-4'>
+      {status === 'loading' && (
+        <div className='flex min-h-[28rem] w-full max-w-2xl flex-col items-center justify-center rounded-sm border border-slate-300 bg-white text-center shadow-lg'>
+          <LoaderCircle className='h-8 w-8 animate-spin text-indigo-500' />
+          <p className='mt-3 text-sm font-medium text-slate-600'>
+            正在加载 PDF 预览…
+          </p>
+        </div>
+      )}
+
+      {status === 'ready' && (
+        <div className='flex w-full flex-col items-center gap-4'>
+          <div className='flex w-full max-w-2xl items-center justify-between gap-3 text-xs text-slate-500'>
+            <span>共 {pageNumbers.length} 页</span>
+            {isRendering && (
+              <span className='inline-flex items-center gap-1.5'>
+                <LoaderCircle className='h-3.5 w-3.5 animate-spin' />
+                正在渲染并建立文本索引
+              </span>
+            )}
+          </div>
+          {pageNumbers.map((pageNumber) => (
+            <div
+              key={pageNumber}
+              className='max-w-full overflow-auto rounded-sm border border-slate-300 bg-white shadow-lg'
+            >
+              <div
+                ref={(pageElement) => {
+                  if (pageElement) {
+                    pageRefs.current.set(pageNumber, pageElement)
+                    return
+                  }
+
+                  pageRefs.current.delete(pageNumber)
+                }}
+                className='pdf-page'
+              >
+                <canvas
+                  ref={(canvas) => {
+                    if (canvas) {
+                      canvasRefs.current.set(pageNumber, canvas)
+                      return
+                    }
+
+                    canvasRefs.current.delete(pageNumber)
+                  }}
+                  aria-label={`PDF 第 ${pageNumber} 页`}
+                  className='block bg-white'
+                />
+                <div
+                  ref={(textLayerElement) => {
+                    if (textLayerElement) {
+                      textLayerRefs.current.set(pageNumber, textLayerElement)
+                      return
+                    }
+
+                    textLayerRefs.current.delete(pageNumber)
+                  }}
+                  className='textLayer'
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1050,7 +1964,11 @@ function ReportPanel({
                             hasEvidence
                               ? 'cursor-pointer hover:bg-slate-50 focus:outline-none focus-visible:bg-indigo-50'
                               : ''
-                          } ${isActive ? 'bg-indigo-50/70' : ''}`}
+                          } ${
+                            isActive
+                              ? 'relative z-10 bg-indigo-50/70 outline-2 outline-indigo-500 outline-offset-[-2px]'
+                              : ''
+                          }`}
                         >
                           <td className='px-4 py-3 align-top font-bold text-slate-950'>
                             {requirement.label}

@@ -45,3 +45,85 @@ textarea:disabled,
 [aria-disabled="true"] {
   cursor: not-allowed;
 }
+
+/* pdf.js positions text with CSS variables inherited from .pdf-page. The text
+ * stays transparent for visual fidelity while evidence spans receive a visible
+ * background and remain selectable/clickable. */
+.pdf-page {
+  position: relative;
+  flex: none;
+}
+
+.pdf-page .textLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: clip;
+  text-align: initial;
+  line-height: 1;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+}
+
+.pdf-page .textLayer[data-main-rotation="90"] {
+  transform: rotate(90deg) translateY(-100%);
+}
+
+.pdf-page .textLayer[data-main-rotation="180"] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+
+.pdf-page .textLayer[data-main-rotation="270"] {
+  transform: rotate(270deg) translateX(-100%);
+}
+
+.pdf-page .textLayer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.pdf-page .textLayer > :not(.markedContent),
+.pdf-page .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+}
+
+.pdf-page .textLayer .pdf-evidence-highlight {
+  margin: -1px;
+  padding: 1px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: outline-color 150ms ease, background-color 150ms ease;
+}
+
+.pdf-page .textLayer .pdf-evidence-pass {
+  background: rgb(134 239 172 / 62%);
+  box-shadow: inset 0 -2px 0 rgb(34 197 94 / 85%);
+}
+
+.pdf-page .textLayer .pdf-evidence-partial {
+  background: rgb(253 230 138 / 68%);
+  box-shadow: inset 0 -2px 0 rgb(234 179 8 / 85%);
+}
+
+.pdf-page .textLayer .pdf-evidence-miss {
+  background: rgb(254 202 202 / 64%);
+  box-shadow: inset 0 -2px 0 rgb(239 68 68 / 85%);
+}
+
+.pdf-page .textLayer .pdf-evidence-active {
+  outline: 2px solid rgb(79 70 229);
+  outline-offset: 1px;
+  background: rgb(199 210 254 / 80%);
+}
+
+.hiddenCanvasElement {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  width: 0;
+  height: 0;
+}

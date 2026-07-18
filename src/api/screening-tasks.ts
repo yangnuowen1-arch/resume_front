@@ -28,17 +28,17 @@ export interface ScreeningTask {
   summary?: string | null;
   markdownReport?: string | null;
   errorMessage?: string | null;
+  resumeFileUrl?: string | null;
+  resumePreviewUrl?: string | null;
 }
 
 export type RequirementMatchStatus = "pass" | "partial" | "miss" | string;
 
 export interface RequirementEvidence {
-  /** Text snippet copied verbatim from the resume. Must be an exact substring of resumeText for precise highlighting. */
+  /** Text snippet copied verbatim from the resume. */
   text: string;
-  /** Optional character start index within resumeText. */
-  start?: number | null;
-  /** Optional character end index within resumeText. */
-  end?: number | null;
+  reason?: string;
+  type?: string;
 }
 
 export interface ScreeningRequirement {
@@ -95,6 +95,10 @@ export interface ScreeningResumeSection {
   text?: string | null;
   textAvailable?: boolean;
   highlightAvailable?: boolean;
+  fileUrl?: string | null;
+  previewUrl?: string | null;
+  filename?: string | null;
+  fileType?: string | null;
 }
 
 export interface ScreeningFallbackSection {
